@@ -1,0 +1,6 @@
+{
+  "name": "LeadForge",
+  "description": "AI sales operator and opportunity intelligence command center for B2B digital agencies.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
