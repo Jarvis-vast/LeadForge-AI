@@ -5,7 +5,8 @@
 
 import React, { useEffect } from 'react';
 import { LeadForgeProvider, useLeadForge } from './context/LeadForgeContext';
-import { HeaderNavigation } from './components/HeaderNavigation';
+import { AppNavigationRail } from './components/AppNavigationRail';
+import { AppTopBar } from './components/AppTopBar';
 import { TodayBriefing } from './components/TodayBriefing';
 import { OpportunityList } from './components/OpportunityList';
 import { OpportunityDetail } from './components/OpportunityDetail';
@@ -29,7 +30,7 @@ const MainContent: React.FC = () => {
   const { activeTab, selectedOpportunityId } = useLeadForge();
 
   return (
-    <main className="max-w-7xl mx-auto px-4 md:px-8 py-8">
+    <main className="w-full max-w-7xl mx-auto px-4 md:px-8 py-8 flex-1">
       {activeTab === 'overview' && <TodayBriefing />}
       {activeTab === 'opportunities' && (
         selectedOpportunityId ? <OpportunityDetail /> : <OpportunityList />
@@ -91,12 +92,18 @@ const AppShell: React.FC = () => {
 
   // Authenticated Command Center Experience
   return (
-    <div className="min-h-screen bg-black text-white selection:bg-white selection:text-black font-ui antialiased relative">
-      {/* Navigation Bar */}
-      <HeaderNavigation />
+    <div className="min-h-screen bg-black text-white selection:bg-white selection:text-black font-ui antialiased relative flex flex-col md:flex-row">
+      {/* 2. Desktop Slim Liquid-Glass Navigation Rail */}
+      <AppNavigationRail />
 
-      {/* Dynamic Views */}
-      <MainContent />
+      {/* Main Working View Area */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* 3. Top Bar */}
+        <AppTopBar />
+
+        {/* Dynamic Views */}
+        <MainContent />
+      </div>
 
       {/* Focus Mode Spotlight Modal */}
       <FocusModeModal />

@@ -58,6 +58,7 @@ interface LeadForgeContextType {
   drafts: Record<string, OutreachDraft>;
   tasks: Task[];
   activities: Activity[];
+  notes: Record<string, { id: string; text: string; createdAt: string }[]>;
   icp: ICPProfile;
   notifications: NotificationItem[];
   researchRuns: ResearchRun[];
@@ -75,6 +76,8 @@ interface LeadForgeContextType {
   // Actions
   updateOpportunityStage: (id: string, newStage: OpportunityStage) => void;
   updateOpportunityScore: (id: string, breakdown: Opportunity['scoreBreakdown']) => void;
+  dismissOpportunity: (id: string, reason: string, note?: string) => void;
+  addOpportunityNote: (oppId: string, text: string) => void;
   saveOutreachDraft: (oppId: string, draft: Partial<OutreachDraft>) => void;
   approveOutreachDraft: (oppId: string) => void;
   generateOutreachWithAI: (oppId: string, tone?: OutreachDraft['tone'], channel?: OutreachDraft['channel']) => Promise<void>;
@@ -240,6 +243,21 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [activities, setActivities] = useState<Activity[]>(() => {
     const saved = localStorage.getItem('leadforge_activities');
     return saved ? JSON.parse(saved) : initialActivities;
+  });
+
+  const [notes, setNotes] = useState<Record<string, { id: string; text: string; createdAt: string }[]>>(() => {
+    const saved = localStorage.getItem('leadforge_notes');
+    return saved
+      ? JSON.parse(saved)
+      : {
+          'opp-01': [
+            {
+              id: 'note-01',
+              text: 'Met founder Alex Morgan at SaaStr 2025; mentioned looking into outbound acceleration and dedicated client pipeline.',
+              createdAt: 'Yesterday · 5:20 PM',
+            },
+          ],
+        };
   });
 
   const [icp, setIcp] = useState<ICPProfile>(() => {
@@ -641,6 +659,10 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [drafts]);
 
   useEffect(() => {
+    localStorage.setItem('leadforge_notes', JSON.stringify(notes));
+  }, [notes]);
+
+  useEffect(() => {
     localStorage.setItem('leadforge_icp', JSON.stringify(icp));
   }, [icp]);
 
@@ -731,6 +753,62 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       actorType: 'AI',
       actorName: 'LeadForge Scoring Engine',
       description: `Opportunity score updated to ${finalScore} based on refreshed factor weights.`,
+      happenedAt: 'Just now',
+    };
+    setActivities((prev) => [newActivity, ...prev]);
+  };
+
+  const dismissOpportunity = (id: string, reason: string, note?: string) => {
+    const targetOpp = opportunities.find((o) => o.id === id);
+    const targetAcc = accounts.find((a) => a.id === targetOpp?.accountId);
+
+    setOpportunities((prev) => prev.filter((o) => o.id !== id));
+    if (selectedOpportunityId === id) {
+      setSelectedOpportunityId(null);
+    }
+
+    const newActivity: Activity = {
+      id: 'act-' + Date.now(),
+      opportunityId: id,
+      type: 'DISMISSED',
+      actorType: 'USER',
+      actorName: 'Alex',
+      description: `Marked as Not a fit (${reason})${note ? `: "${note}"` : ''}.`,
+      happenedAt: 'Just now',
+    };
+    setActivities((prev) => [newActivity, ...prev]);
+
+    const newNotif: NotificationItem = {
+      id: 'notif-' + Date.now(),
+      type: 'FYI',
+      title: `${targetAcc?.name || 'Opportunity'} dismissed`,
+      description: `Marked as Not a fit (${reason}).`,
+      opportunityId: id,
+      read: false,
+      createdAt: 'Just now',
+    };
+    setNotifications((prev) => [newNotif, ...prev]);
+  };
+
+  const addOpportunityNote = (oppId: string, text: string) => {
+    if (!text.trim()) return;
+    const newNote = {
+      id: 'note-' + Date.now(),
+      text: text.trim(),
+      createdAt: 'Just now',
+    };
+    setNotes((prev) => ({
+      ...prev,
+      [oppId]: [newNote, ...(prev[oppId] || [])],
+    }));
+
+    const newActivity: Activity = {
+      id: 'act-' + Date.now(),
+      opportunityId: oppId,
+      type: 'NOTE_ADDED',
+      actorType: 'USER',
+      actorName: 'Alex',
+      description: `Added note: "${text.trim().slice(0, 60)}${text.trim().length > 60 ? '...' : ''}"`,
       happenedAt: 'Just now',
     };
     setActivities((prev) => [newActivity, ...prev]);
@@ -1252,6 +1330,7 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         drafts,
         tasks,
         activities,
+        notes,
         icp,
         notifications,
         researchRuns,
@@ -1265,6 +1344,8 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setNotificationsDrawerOpen,
         updateOpportunityStage,
         updateOpportunityScore,
+        dismissOpportunity,
+        addOpportunityNote,
         saveOutreachDraft,
         approveOutreachDraft,
         generateOutreachWithAI,

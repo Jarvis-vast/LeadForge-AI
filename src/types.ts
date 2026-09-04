@@ -39,7 +39,7 @@ export interface EvidenceItem {
   opportunityId: string;
   accountId: string;
   claim: string;
-  claimType: 'HIRING' | 'TECH_STACK' | 'FUNDING' | 'EXPANSION' | 'WEBSITE' | 'LEADERSHIP';
+  claimType: 'HIRING' | 'TECH_STACK' | 'FUNDING' | 'EXPANSION' | 'WEBSITE' | 'LEADERSHIP' | 'PRODUCT_LAUNCH';
   sourceUrl: string;
   sourceDomain: string;
   observedAt: string;
@@ -130,11 +130,14 @@ export interface Activity {
     | 'SCORE_UPDATED'
     | 'OUTREACH_DRAFTED'
     | 'OUTREACH_APPROVED'
+    | 'OUTREACH_SENT'
     | 'TASK_CREATED'
     | 'TASK_COMPLETED'
     | 'STAGE_CHANGED'
     | 'REPLY_RECEIVED'
-    | 'MEETING_BOOKED';
+    | 'MEETING_BOOKED'
+    | 'NOTE_ADDED'
+    | 'DISMISSED';
   actorType: 'AI' | 'USER';
   actorName: string;
   description: string;
