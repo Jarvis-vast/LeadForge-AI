@@ -10,6 +10,8 @@ import {
   Info,
   Sparkles,
   ArrowRight,
+  Database,
+  Trash2,
 } from 'lucide-react';
 
 export const SettingsView: React.FC = () => {
@@ -20,6 +22,8 @@ export const SettingsView: React.FC = () => {
     accounts,
     reopenOnboarding,
     reopenICPConfirmation,
+    seedDemoData,
+    clearDemoData,
   } = useLeadForge();
 
   const [workspaceName, setWorkspaceName] = useState(workspace.name);
@@ -202,6 +206,42 @@ export const SettingsView: React.FC = () => {
             <Download className="w-4 h-4" />
             <span>Export Workspace JSON Snapshot</span>
           </button>
+        </div>
+      </div>
+
+      {/* Development Fixtures & Data Isolation (Spec Section 8) */}
+      <div className="rounded-3xl glass-panel p-6 sm:p-8 border border-white/[0.1] space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <h2 className="font-ui font-semibold text-sm uppercase tracking-wider text-white flex items-center gap-2">
+              <Database className="w-4 h-4 text-white/70" />
+              <span>Development Fixtures & Isolation (Section 8)</span>
+            </h2>
+            <p className="text-xs font-ui text-white/60 font-light leading-relaxed max-w-xl">
+              Fictional benchmark accounts (Acme SaaS, Nova Systems, PulseMetrics, Kova Health, Lumina Commerce) are tagged with <code className="text-white/80 bg-white/10 px-1 py-0.5 rounded">is_sample = 1</code> and isolated from live production data.
+            </p>
+          </div>
+          <div className="flex items-center gap-2.5 shrink-0">
+            <button
+              onClick={() => seedDemoData()}
+              className="px-4 py-2.5 rounded-full bg-white/[0.08] hover:bg-white text-white hover:text-black font-ui text-xs font-medium border border-white/[0.15] transition-all flex items-center gap-2 shadow-sm"
+              title="Populate development benchmark fixtures"
+            >
+              <Database className="w-3.5 h-3.5" />
+              <span>Load Sample Fixtures</span>
+            </button>
+            <button
+              onClick={() => clearDemoData()}
+              className="px-4 py-2.5 rounded-full glass-pill hover:bg-red-500/20 text-white/70 hover:text-red-300 font-ui text-xs font-medium transition-all flex items-center gap-2 border border-white/[0.08] hover:border-red-500/30"
+              title="Remove sample records from workspace"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Clear Sample Fixtures</span>
+            </button>
+          </div>
+        </div>
+        <div className="text-[11px] font-mono text-white/40 pt-1">
+          Active opportunities in workspace: {opportunities.length} | Monitored target accounts: {accounts.length}
         </div>
       </div>
     </div>

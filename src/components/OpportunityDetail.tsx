@@ -42,6 +42,8 @@ export const OpportunityDetail: React.FC = () => {
     runResearchOnAccount,
     disputeEvidence,
     isAIWorking,
+    opportunitySubView,
+    setOpportunitySubView,
   } = useLeadForge();
 
   // Modals state
@@ -150,6 +152,34 @@ export const OpportunityDetail: React.FC = () => {
       transition={{ duration: 0.25, ease: 'easeOut' }}
       className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6 pb-24"
     >
+      {/* Sub-view Navigation Switcher */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-3 font-ui">
+        <div className="flex items-center gap-1.5 p-1 rounded-full liquid-glass border border-white/10 text-xs">
+          <button
+            onClick={() => setOpportunitySubView('dossier')}
+            className="px-3.5 py-1.5 rounded-full bg-white text-black font-semibold shadow-sm transition-all cursor-pointer"
+          >
+            Intelligence Dossier
+          </button>
+          <button
+            onClick={() => setOpportunitySubView('research')}
+            className="px-3.5 py-1.5 rounded-full text-white/60 hover:text-white transition-all inline-flex items-center gap-1.5 cursor-pointer"
+          >
+            <Sparkles className="w-3 h-3 text-emerald-400" />
+            <span>Research & Evidence</span>
+            <span className="px-1.5 py-0.2 rounded-full bg-white/10 text-[10px] font-mono text-white">3 signals</span>
+          </button>
+        </div>
+
+        <button
+          onClick={() => setOpportunitySubView('research')}
+          className="hidden sm:inline-flex items-center gap-1 text-xs text-white/60 hover:text-white transition-colors cursor-pointer"
+        >
+          <span>Explore Research Workspace (Screen 07)</span>
+          <ArrowRight className="w-3 h-3" />
+        </button>
+      </div>
+
       {/* 1. Opportunity Header */}
       <DossierHeader
         opportunity={opp}
@@ -236,6 +266,9 @@ export const OpportunityDetail: React.FC = () => {
             onRefreshResearch={handleRefreshResearch}
             onDismiss={() => setDismissModalOpen(true)}
             isRefreshing={isRefreshingResearch}
+            onViewResearch={() => setOpportunitySubView('research')}
+            primaryContact={primaryContact}
+            onSelectContactForOutreach={handleSelectContactForOutreach}
           />
         </div>
       </div>

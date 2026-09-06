@@ -47,6 +47,21 @@ export interface EvidenceItem {
   confidence: number;
   whyItMatters: string;
   isDisputed?: boolean;
+  headline?: string;
+  observation?: string;
+  excerpt?: string;
+  badge?: 'Observed' | 'Inferred';
+}
+
+export interface ResearchSourceItem {
+  id: string;
+  name: string;
+  domain: string;
+  url: string;
+  freshness: string;
+  type: 'CAREERS' | 'BLOG' | 'SOCIAL' | 'WEBSITE' | 'GITHUB' | 'REGISTRY' | 'NEWS';
+  quality: 'PRIMARY' | 'FIRST_PARTY' | 'PUBLIC_REGISTRY' | 'CORROBORATING';
+  lastCrawled: string;
 }
 
 export interface Contact {

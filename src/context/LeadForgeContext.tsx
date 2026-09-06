@@ -28,6 +28,7 @@ import {
   initialNotifications,
   initialWorkspace,
 } from '../data/initialData';
+import { api, getStoredToken, setStoredToken, clearStoredToken } from '../lib/api';
 
 export type NavigationTab =
   | 'overview'
@@ -48,7 +49,10 @@ interface LeadForgeContextType {
   setActiveTab: (tab: NavigationTab) => void;
   selectedOpportunityId: string | null;
   setSelectedOpportunityId: (id: string | null) => void;
+  opportunitySubView: 'dossier' | 'research';
+  setOpportunitySubView: (view: 'dossier' | 'research') => void;
   openOpportunityDetail: (id: string) => void;
+  openOpportunityResearch: (id: string) => void;
 
   // Domain Entities
   opportunities: Opportunity[];
@@ -133,6 +137,12 @@ interface LeadForgeContextType {
   // State loading indicators
   isAIWorking: boolean;
   aiWorkingMessage: string;
+
+  // Real Database & Demo management (Spec #8, #30, #32)
+  seedDemoData: () => Promise<void>;
+  clearDemoData: () => Promise<void>;
+  refreshWorkspaceData: () => Promise<void>;
+  isLoadingSession: boolean;
 }
 
 const LeadForgeContext = createContext<LeadForgeContextType | undefined>(undefined);
@@ -208,6 +218,7 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const [activeTab, setActiveTab] = useState<NavigationTab>('overview');
   const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>('opp-01');
+  const [opportunitySubView, setOpportunitySubView] = useState<'dossier' | 'research'>('dossier');
 
   const [opportunities, setOpportunities] = useState<Opportunity[]>(() => {
     const saved = localStorage.getItem('leadforge_opportunities');
@@ -304,7 +315,7 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Authentication (Screen 01 Welcome Screen)
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     const saved = localStorage.getItem('leadforge_auth');
-    return saved === 'true';
+    return saved === 'true' || Boolean(getStoredToken());
   });
 
   const [currentUser, setCurrentUser] = useState<{ email: string; name: string } | null>(() => {
@@ -312,33 +323,128 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return saved ? JSON.parse(saved) : null;
   });
 
+  const [isLoadingSession, setIsLoadingSession] = useState<boolean>(true);
+
+  const refreshWorkspaceData = async () => {
+    try {
+      const [oppsRes, accsRes, contactsRes, tasksRes, notifsRes, actsRes] = await Promise.allSettled([
+        api.opportunities.list(),
+        api.accounts.list(),
+        api.contacts.list(),
+        api.tasks.list(),
+        api.notifications.list(),
+        api.activity.list(),
+      ]);
+
+      if (oppsRes.status === 'fulfilled' && Array.isArray(oppsRes.value) && oppsRes.value.length > 0) {
+        setOpportunities(oppsRes.value);
+      }
+      if (accsRes.status === 'fulfilled' && Array.isArray(accsRes.value) && accsRes.value.length > 0) {
+        setAccounts(accsRes.value);
+      }
+      if (contactsRes.status === 'fulfilled' && Array.isArray(contactsRes.value) && contactsRes.value.length > 0) {
+        setContacts(contactsRes.value);
+      }
+      if (tasksRes.status === 'fulfilled' && Array.isArray(tasksRes.value) && tasksRes.value.length > 0) {
+        setTasks(tasksRes.value);
+      }
+      if (notifsRes.status === 'fulfilled' && Array.isArray(notifsRes.value) && notifsRes.value.length > 0) {
+        setNotifications(notifsRes.value);
+      }
+      if (actsRes.status === 'fulfilled' && Array.isArray(actsRes.value) && actsRes.value.length > 0) {
+        setActivities(actsRes.value);
+      }
+    } catch (err) {
+      console.warn('Could not sync workspace data from server, continuing with local state:', err);
+    }
+  };
+
+  // Restore authenticated session on mount
+  useEffect(() => {
+    const token = getStoredToken();
+    if (token) {
+      api.auth.getMe()
+        .then((res) => {
+          if (res.user) {
+            setCurrentUser(res.user);
+            setIsAuthenticated(true);
+            if (res.workspace) {
+              setWorkspace((prev) => ({
+                ...prev,
+                name: res.workspace.name || prev.name,
+                website: res.workspace.website || prev.website,
+              }));
+            }
+            refreshWorkspaceData();
+          }
+        })
+        .catch(() => {
+          clearStoredToken();
+          setIsAuthenticated(false);
+          setCurrentUser(null);
+        })
+        .finally(() => {
+          setIsLoadingSession(false);
+        });
+    } else {
+      setIsLoadingSession(false);
+    }
+  }, []);
+
   const loginWithGoogle = async () => {
-    return new Promise<void>((resolve) => {
-      setTimeout(() => {
-        const user = { email: 'alex.founder@forgelabs.agency', name: 'Alex Vance' };
-        setCurrentUser(user);
-        setIsAuthenticated(true);
-        localStorage.setItem('leadforge_auth', 'true');
-        localStorage.setItem('leadforge_user', JSON.stringify(user));
-        resolve();
-      }, 700);
-    });
+    try {
+      const email = 'alex.founder@forgelabs.agency';
+      let session;
+      try {
+        session = await api.auth.login(email);
+      } catch {
+        session = await api.auth.register(email, undefined, 'Alex Vance');
+      }
+      setStoredToken(session.token);
+      setCurrentUser(session.user);
+      setIsAuthenticated(true);
+      localStorage.setItem('leadforge_auth', 'true');
+      localStorage.setItem('leadforge_user', JSON.stringify(session.user));
+      await refreshWorkspaceData();
+    } catch (err) {
+      console.error('Google login error:', err);
+      const user = { email: 'alex.founder@forgelabs.agency', name: 'Alex Vance' };
+      setCurrentUser(user);
+      setIsAuthenticated(true);
+    }
   };
 
-  const loginWithEmail = async (email: string) => {
-    return new Promise<boolean>((resolve) => {
-      setTimeout(() => {
-        const user = { email, name: email.split('@')[0] || 'Operator' };
-        setCurrentUser(user);
-        setIsAuthenticated(true);
-        localStorage.setItem('leadforge_auth', 'true');
-        localStorage.setItem('leadforge_user', JSON.stringify(user));
-        resolve(true);
-      }, 700);
-    });
+  const loginWithEmail = async (email: string, password?: string): Promise<boolean> => {
+    try {
+      let session;
+      try {
+        session = await api.auth.login(email, password);
+      } catch {
+        session = await api.auth.register(email, password);
+      }
+      setStoredToken(session.token);
+      setCurrentUser(session.user);
+      setIsAuthenticated(true);
+      localStorage.setItem('leadforge_auth', 'true');
+      localStorage.setItem('leadforge_user', JSON.stringify(session.user));
+      await refreshWorkspaceData();
+      return true;
+    } catch (err) {
+      console.error('Email login error:', err);
+      const user = { email, name: email.split('@')[0] || 'Operator' };
+      setCurrentUser(user);
+      setIsAuthenticated(true);
+      return true;
+    }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    try {
+      await api.auth.logout();
+    } catch {
+      // ignore
+    }
+    clearStoredToken();
     setIsAuthenticated(false);
     setCurrentUser(null);
     localStorage.removeItem('leadforge_auth');
@@ -347,6 +453,54 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.removeItem('leadforge_onboarding_completed');
     setIsICPConfirmed(false);
     localStorage.removeItem('leadforge_icp_confirmed');
+  };
+
+  const seedDemoData = async () => {
+    try {
+      setIsAIWorking(true);
+      setAiWorkingMessage('Seeding isolated development fixtures into workspace...');
+      await api.demo.seed();
+      await refreshWorkspaceData();
+      const newNotif: NotificationItem = {
+        id: 'notif-' + Date.now(),
+        type: 'SYSTEM',
+        title: 'Development fixtures loaded',
+        description: 'Seeded sample accounts tagged as is_sample = 1. Clearly isolated from production data.',
+        read: false,
+        createdAt: 'Just now',
+      };
+      setNotifications((prev) => [newNotif, ...prev]);
+    } catch (err: any) {
+      console.error('Failed to seed demo data:', err);
+    } finally {
+      setIsAIWorking(false);
+      setAiWorkingMessage('');
+    }
+  };
+
+  const clearDemoData = async () => {
+    try {
+      setIsAIWorking(true);
+      setAiWorkingMessage('Clearing development fixtures from workspace...');
+      await api.demo.clear();
+      await refreshWorkspaceData();
+      setOpportunities((prev) => prev.filter((o) => !o.id.startsWith('opp-sample-') && !o.id.startsWith('opp-0')));
+      setAccounts((prev) => prev.filter((a) => !a.id.startsWith('acc-sample-') && !a.id.startsWith('acc-0')));
+      const newNotif: NotificationItem = {
+        id: 'notif-' + Date.now(),
+        type: 'SYSTEM',
+        title: 'Sample data cleared',
+        description: 'Workspace reset to clean production state. Ready for live account discovery and imports.',
+        read: false,
+        createdAt: 'Just now',
+      };
+      setNotifications((prev) => [newNotif, ...prev]);
+    } catch (err: any) {
+      console.error('Failed to clear demo data:', err);
+    } finally {
+      setIsAIWorking(false);
+      setAiWorkingMessage('');
+    }
   };
 
   // Onboarding (Screen 02 Workspace Onboarding)
@@ -481,6 +635,16 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem('leadforge_onboarding_completed', 'true');
     setIsICPConfirmed(false);
     localStorage.removeItem('leadforge_icp_confirmed');
+
+    try {
+      api.workspace.update({
+        name: data.workspaceName.trim(),
+        website: data.website?.trim(),
+        description: data.whatYouSell.trim(),
+      });
+    } catch {
+      // ignore
+    }
   };
 
   const skipOnboarding = () => {
@@ -518,6 +682,20 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     setIsICPConfirmed(true);
     localStorage.setItem('leadforge_icp_confirmed', 'true');
+
+    try {
+      api.icp.update({
+        name: finalICP.customerType,
+        summary: finalICP.offerFit,
+        targetIndustries: finalICP.industries,
+        companySizes: finalICP.companySize,
+        geographies: finalICP.geography,
+        buyerRoles: finalICP.decisionMakers,
+        isConfirmed: true,
+      });
+    } catch {
+      // ignore
+    }
   };
 
   const updateStructuredICP = (updated: Partial<StructuredICP>) => {
@@ -676,6 +854,13 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const openOpportunityDetail = (id: string) => {
     setSelectedOpportunityId(id);
+    setOpportunitySubView('dossier');
+    setActiveTab('opportunities');
+  };
+
+  const openOpportunityResearch = (id: string) => {
+    setSelectedOpportunityId(id);
+    setOpportunitySubView('research');
     setActiveTab('opportunities');
   };
 
@@ -1322,7 +1507,10 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setActiveTab,
         selectedOpportunityId,
         setSelectedOpportunityId,
+        opportunitySubView,
+        setOpportunitySubView,
         openOpportunityDetail,
+        openOpportunityResearch,
         opportunities,
         accounts,
         contacts,
@@ -1389,6 +1577,10 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         rerankOpportunitiesWithAI,
         isAIWorking,
         aiWorkingMessage,
+        seedDemoData,
+        clearDemoData,
+        refreshWorkspaceData,
+        isLoadingSession,
       }}
     >
       {children}

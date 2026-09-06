@@ -8,6 +8,8 @@ export const AppTopBar: React.FC = () => {
     setActiveTab,
     selectedOpportunityId,
     setSelectedOpportunityId,
+    opportunitySubView,
+    setOpportunitySubView,
     accounts,
     notifications,
     setCommandPaletteOpen,
@@ -104,7 +106,20 @@ export const AppTopBar: React.FC = () => {
                 Opportunities
               </button>
               <span className="text-white/30">/</span>
-              <span className="text-white font-medium">{selectedAcc?.name || 'Acme SaaS'}</span>
+              {opportunitySubView === 'research' ? (
+                <>
+                  <button
+                    onClick={() => setOpportunitySubView('dossier')}
+                    className="text-white/60 hover:text-white transition-colors cursor-pointer font-medium"
+                  >
+                    {selectedAcc?.name || 'Acme SaaS'}
+                  </button>
+                  <span className="text-white/30">/</span>
+                  <span className="text-white font-medium">Research</span>
+                </>
+              ) : (
+                <span className="text-white font-medium">{selectedAcc?.name || 'Acme SaaS'}</span>
+              )}
             </div>
           ) : (
             <div>

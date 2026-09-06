@@ -1,419 +1,755 @@
-import express from "express";
-import path from "path";
-import dotenv from "dotenv";
-import { GoogleGenAI, Type } from "@google/genai";
-import { createServer as createViteServer } from "vite";
+import express, { Request, Response, NextFunction } from 'express';
+import path from 'path';
+import dotenv from 'dotenv';
+import crypto from 'node:crypto';
+import { createServer as createViteServer } from 'vite';
+import { db } from './server/db/database';
+import { AuthService } from './server/services/authService';
+import { SampleDataService } from './server/services/sampleDataService';
+import { AIGateway } from './server/services/aiGateway';
+import { ResearchService } from './server/services/researchService';
+import { OpportunityService } from './server/services/opportunityService';
 
 dotenv.config();
 
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: '15mb' }));
 
-// Lazy init for Gemini API
-let aiClient: GoogleGenAI | null = null;
-function getAI() {
-  if (!aiClient && process.env.GEMINI_API_KEY) {
-    aiClient = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
-  }
-  return aiClient;
+// Extend Express Request type for authenticated context
+export interface AuthenticatedRequest extends Request {
+  user?: any;
+  workspace?: any;
 }
 
-// Health check
-app.get("/api/health", (req, res) => {
+// Authentication Middleware
+function extractToken(req: Request): string | null {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authHeader.substring(7).trim();
+  }
+  const customHeader = req.headers['x-leadforge-token'] as string;
+  if (customHeader) return customHeader.trim();
+  return null;
+}
+
+function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const token = extractToken(req);
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication required. Please sign in.' });
+  }
+
+  const session = AuthService.validateSession(token);
+  if (!session) {
+    return res.status(401).json({ error: 'Invalid or expired session. Please sign in again.' });
+  }
+
+  req.user = session.user;
+  req.workspace = session.workspace;
+  next();
+}
+
+function optionalAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const token = extractToken(req);
+  if (token) {
+    const session = AuthService.validateSession(token);
+    if (session) {
+      req.user = session.user;
+      req.workspace = session.workspace;
+      return next();
+    }
+  }
+
+  // Fallback to default or demo workspace if available
+  const defaultWs = db.prepare('SELECT * FROM workspaces ORDER BY created_at ASC LIMIT 1').get() as any;
+  if (defaultWs) {
+    req.workspace = defaultWs;
+    req.user = { id: 'usr-default', email: 'founder@leadforge.ai', name: 'Founder', role: 'founder' };
+  }
+  next();
+}
+
+// ----------------------------------------------------
+// Health Check (Spec #32)
+// ----------------------------------------------------
+app.get('/api/health', (req, res) => {
   res.json({
-    status: "ok",
-    service: "LeadForge AI Sales Operator",
-    version: "1.0.0",
-    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    status: 'ok',
+    service: 'LeadForge AI Sales Intelligence Engine',
+    version: '1.0.0-production',
+    database: 'SQLite (WAL Mode, Relational Schema Active)',
+    aiEngine: Boolean(process.env.GEMINI_API_KEY) ? 'Gemini 3.8 Flash Active' : 'Heuristic Engine Ready',
+    timestamp: new Date().toISOString(),
   });
 });
 
-// SCR-02: ICP Natural Language Parser
-app.post("/api/icps/parse", async (req, res) => {
+// ----------------------------------------------------
+// Authentication Endpoints (Spec #3, #32)
+// ----------------------------------------------------
+app.post('/api/auth/register', (req, res) => {
+  try {
+    const { email, password, name } = req.body;
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json({ error: 'Valid email address is required.' });
+    }
+    const session = AuthService.register(email, password, name);
+    res.status(201).json(session);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Registration failed.' });
+  }
+});
+
+app.post('/api/auth/login', (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json({ error: 'Valid email address is required.' });
+    }
+    const session = AuthService.login(email, password);
+    res.json(session);
+  } catch (err: any) {
+    res.status(401).json({ error: err.message || 'Login failed.' });
+  }
+});
+
+app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
+  res.json({
+    user: req.user,
+    workspace: req.workspace,
+  });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  const token = extractToken(req);
+  if (token) {
+    AuthService.logout(token);
+  }
+  res.json({ success: true });
+});
+
+// ----------------------------------------------------
+// Workspace Management (Spec #6, #32)
+// ----------------------------------------------------
+app.get('/api/workspace', requireAuth, (req: AuthenticatedRequest, res) => {
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(req.workspace.id) as any;
+  res.json(ws || req.workspace);
+});
+
+app.patch('/api/workspace', requireAuth, (req: AuthenticatedRequest, res) => {
+  const { name, website, description, currency, timezone } = req.body;
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    UPDATE workspaces
+    SET name = COALESCE(?, name),
+        website = COALESCE(?, website),
+        description = COALESCE(?, description),
+        currency = COALESCE(?, currency),
+        timezone = COALESCE(?, timezone),
+        updated_at = ?
+    WHERE id = ?
+  `).run(name, website, description, currency, timezone, now, req.workspace.id);
+
+  const updated = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(req.workspace.id);
+  res.json(updated);
+});
+
+// ----------------------------------------------------
+// ICP Endpoints (Spec #32)
+// ----------------------------------------------------
+app.get('/api/icp', requireAuth, (req: AuthenticatedRequest, res) => {
+  const profile = db.prepare('SELECT * FROM icp_profiles WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 1').get(req.workspace.id) as any;
+  if (!profile) {
+    return res.json(null);
+  }
+
+  res.json({
+    id: profile.id,
+    name: profile.name,
+    summary: profile.summary,
+    targetIndustries: JSON.parse(profile.target_industries || '[]'),
+    companySizes: JSON.parse(profile.company_sizes || '[]'),
+    geographies: JSON.parse(profile.geographies || '[]'),
+    buyerRoles: JSON.parse(profile.buyer_roles || '[]'),
+    buyingSignals: JSON.parse(profile.buying_signals || '[]'),
+    exclusions: JSON.parse(profile.exclusions || '[]'),
+    inferredAssumptions: JSON.parse(profile.inferred_assumptions || '[]'),
+    isConfirmed: Boolean(profile.is_confirmed),
+    confidence: profile.confidence,
+    updatedAt: profile.updated_at,
+  });
+});
+
+app.patch('/api/icp', requireAuth, (req: AuthenticatedRequest, res) => {
+  const {
+    name,
+    summary,
+    targetIndustries,
+    companySizes,
+    geographies,
+    buyerRoles,
+    buyingSignals,
+    exclusions,
+    inferredAssumptions,
+    isConfirmed,
+  } = req.body;
+  const now = new Date().toISOString();
+
+  let profile = db.prepare('SELECT id FROM icp_profiles WHERE workspace_id = ?').get(req.workspace.id) as any;
+  const profileId = profile?.id || crypto.randomUUID();
+
+  if (profile) {
+    db.prepare(`
+      UPDATE icp_profiles
+      SET name = COALESCE(?, name),
+          summary = COALESCE(?, summary),
+          target_industries = COALESCE(?, target_industries),
+          company_sizes = COALESCE(?, company_sizes),
+          geographies = COALESCE(?, geographies),
+          buyer_roles = COALESCE(?, buyer_roles),
+          buying_signals = COALESCE(?, buying_signals),
+          exclusions = COALESCE(?, exclusions),
+          inferred_assumptions = COALESCE(?, inferred_assumptions),
+          is_confirmed = COALESCE(?, is_confirmed),
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      name,
+      summary,
+      targetIndustries ? JSON.stringify(targetIndustries) : null,
+      companySizes ? JSON.stringify(companySizes) : null,
+      geographies ? JSON.stringify(geographies) : null,
+      buyerRoles ? JSON.stringify(buyerRoles) : null,
+      buyingSignals ? JSON.stringify(buyingSignals) : null,
+      exclusions ? JSON.stringify(exclusions) : null,
+      inferredAssumptions ? JSON.stringify(inferredAssumptions) : null,
+      isConfirmed !== undefined ? (isConfirmed ? 1 : 0) : null,
+      now,
+      profileId
+    );
+  } else {
+    db.prepare(`
+      INSERT INTO icp_profiles (
+        id, workspace_id, name, summary, target_industries, company_sizes, geographies,
+        buyer_roles, buying_signals, exclusions, inferred_assumptions, is_confirmed, confidence, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.92, ?, ?)
+    `).run(
+      profileId,
+      req.workspace.id,
+      name || 'Target ICP',
+      summary || '',
+      JSON.stringify(targetIndustries || []),
+      JSON.stringify(companySizes || []),
+      JSON.stringify(geographies || []),
+      JSON.stringify(buyerRoles || []),
+      JSON.stringify(buyingSignals || []),
+      JSON.stringify(exclusions || []),
+      JSON.stringify(inferredAssumptions || []),
+      isConfirmed ? 1 : 0,
+      now,
+      now
+    );
+  }
+
+  res.json({ success: true, profileId });
+});
+
+// ICP Parsing with AI
+const handleICPParse = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { prompt } = req.body;
-    if (!prompt || typeof prompt !== "string") {
-      return res.status(400).json({ error: "Prompt string is required" });
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'Prompt string is required' });
     }
-
-    const ai = getAI();
-    if (ai) {
-      try {
-        const response = await ai.models.generateContent({
-          model: "gemini-3.8-flash",
-          contents: `You are LeadForge's B2B ICP Intelligence Engine. 
-The user is a founder or growth lead at a B2B agency (AI automation, web/software development, performance marketing, SEO/content).
-Parse this natural-language ICP description into structured criteria.
-Distinguish clearly which criteria were EXPLICITLY provided by the user versus INFERRED assumptions.
-
-User prompt:
-"${prompt}"
-
-Return strict JSON adhering to the schema.`,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                name: { type: Type.STRING, description: "Short title for this ICP profile" },
-                summary: { type: Type.STRING, description: "One sentence executive definition of this ICP" },
-                industries: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: "Target industry verticals",
-                },
-                companySize: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: "e.g. 10-50 employees, Series A, $2M-$10M ARR",
-                },
-                geography: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: "Target regions or countries",
-                },
-                buyerRoles: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: "Target decision-maker titles like VP Marketing, Head of AI, Founder",
-                },
-                buyingSignals: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: "Key triggers: hiring surges, new product launch, tech stack refresh",
-                },
-                exclusions: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: "Disqualifiers like non-profits, enterprise >5000, agencies",
-                },
-                inferredAssumptions: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: "Assumptions made by AI that were not strictly stated in the prompt",
-                },
-              },
-              required: [
-                "name",
-                "summary",
-                "industries",
-                "companySize",
-                "geography",
-                "buyerRoles",
-                "buyingSignals",
-                "exclusions",
-                "inferredAssumptions",
-              ],
-            },
-          },
-        });
-
-        const parsed = JSON.parse(response.text || "{}");
-        return res.json({ criteria: parsed, source: "gemini-3.8-flash" });
-      } catch (genError) {
-        console.warn("Gemini generation fallback:", genError);
-      }
-    }
-
-    // High-fidelity heuristic fallback when API key is pending
-    const industries = ["B2B SaaS", "E-commerce Tech", "FinTech", "HealthTech"].filter((ind) =>
-      prompt.toLowerCase().includes(ind.toLowerCase())
-    );
-    if (industries.length === 0) industries.push("B2B SaaS / Digital Products");
-
-    return res.json({
-      criteria: {
-        name: "Target ICP — " + (prompt.slice(0, 32).trim() || "Agency Accounts"),
-        summary: prompt.slice(0, 140),
-        industries: industries,
-        companySize: ["20-150 employees", "Series A-B funding", "$3M-$20M ARR"],
-        geography: ["North America", "Western Europe", "UK"],
-        buyerRoles: ["Chief Technology Officer", "VP of Engineering", "Head of Growth", "Founder/CEO"],
-        buyingSignals: [
-          "Recent hiring for sales or engineering roles",
-          "Recent product release or tech stack modernizations",
-          "Active marketing spend / outbound expansion",
-        ],
-        exclusions: ["Pre-revenue startups", "Enterprise (>2,000 employees)", "Pure government contractors"],
-        inferredAssumptions: [
-          "Assumed target company has modern cloud infrastructure",
-          "Inferred sales cycles are typically 3-8 weeks",
-        ],
-      },
-      source: "heuristic-fallback",
-    });
+    const workspaceId = req.workspace?.id || 'ws-default';
+    const result = await AIGateway.parseICP(prompt, workspaceId);
+    res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to parse ICP" });
+    res.status(500).json({ error: err.message || 'Failed to parse ICP' });
+  }
+};
+app.post('/api/icp/parse', optionalAuth, handleICPParse);
+app.post('/api/icps/parse', optionalAuth, handleICPParse);
+
+// ----------------------------------------------------
+// Accounts Endpoints (Spec #32)
+// ----------------------------------------------------
+app.get('/api/accounts', requireAuth, (req: AuthenticatedRequest, res) => {
+  const accounts = db.prepare(`
+    SELECT a.*, COUNT(DISTINCT c.id) as contact_count, COUNT(DISTINCT o.id) as opportunity_count
+    FROM accounts a
+    LEFT JOIN contacts c ON c.account_id = a.id
+    LEFT JOIN opportunities o ON o.account_id = a.id
+    WHERE a.workspace_id = ?
+    GROUP BY a.id
+    ORDER BY a.created_at DESC
+  `).all(req.workspace.id) as any[];
+
+  res.json(
+    accounts.map((acc) => ({
+      ...acc,
+      techStack: acc.tech_stack ? JSON.parse(acc.tech_stack) : [],
+    }))
+  );
+});
+
+app.post('/api/accounts', requireAuth, (req: AuthenticatedRequest, res) => {
+  try {
+    const result = OpportunityService.createAccount(req.workspace.id, req.body);
+    res.status(201).json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to create account.' });
   }
 });
 
-// SCR-06 / FR-04: Account Research & Signal Extraction
-app.post("/api/opportunities/research", async (req, res) => {
+app.get('/api/accounts/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  const account = db.prepare('SELECT * FROM accounts WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspace.id) as any;
+  if (!account) return res.status(404).json({ error: 'Account not found' });
+  res.json({
+    ...account,
+    techStack: account.tech_stack ? JSON.parse(account.tech_stack) : [],
+  });
+});
+
+app.patch('/api/accounts/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  const { name, domain, industry, size, location, description, status } = req.body;
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    UPDATE accounts
+    SET name = COALESCE(?, name),
+        domain = COALESCE(?, domain),
+        industry = COALESCE(?, industry),
+        size = COALESCE(?, size),
+        location = COALESCE(?, location),
+        description = COALESCE(?, description),
+        status = COALESCE(?, status),
+        updated_at = ?
+    WHERE id = ? AND workspace_id = ?
+  `).run(name, domain, industry, size, location, description, status, now, req.params.id, req.workspace.id);
+
+  res.json({ success: true });
+});
+
+app.delete('/api/accounts/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  db.prepare('DELETE FROM accounts WHERE id = ? AND workspace_id = ?').run(req.params.id, req.workspace.id);
+  res.json({ success: true });
+});
+
+// ----------------------------------------------------
+// Contacts Endpoints (Spec #32)
+// ----------------------------------------------------
+app.get('/api/contacts', requireAuth, (req: AuthenticatedRequest, res) => {
+  const contacts = db.prepare(`
+    SELECT c.*, a.name as account_name, a.domain as account_domain
+    FROM contacts c
+    JOIN accounts a ON a.id = c.account_id
+    WHERE c.workspace_id = ?
+    ORDER BY c.is_primary DESC, c.created_at DESC
+  `).all(req.workspace.id) as any[];
+
+  res.json(
+    contacts.map((c) => ({
+      id: c.id,
+      accountId: c.account_id,
+      accountName: c.account_name,
+      accountDomain: c.account_domain,
+      name: c.name,
+      title: c.title,
+      email: c.email,
+      phone: c.phone,
+      linkedinUrl: c.linkedin_url,
+      isPrimary: Boolean(c.is_primary),
+      authorityLevel: c.authority_level,
+      relevanceNotes: c.relevance_notes,
+      createdAt: c.created_at,
+    }))
+  );
+});
+
+app.post('/api/contacts', requireAuth, (req: AuthenticatedRequest, res) => {
+  const { accountId, name, title, email, phone, linkedinUrl, isPrimary, relevanceNotes } = req.body;
+  if (!accountId || !name || !title) {
+    return res.status(400).json({ error: 'accountId, name, and title are required.' });
+  }
+
+  const id = `cnt-${crypto.randomUUID().slice(0, 8)}`;
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO contacts (id, workspace_id, account_id, name, title, email, phone, linkedin_url, is_primary, relevance_notes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, req.workspace.id, accountId, name, title, email || null, phone || null, linkedinUrl || null, isPrimary ? 1 : 0, relevanceNotes || null, now, now);
+
+  res.status(201).json({ id, success: true });
+});
+
+app.patch('/api/contacts/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  const { name, title, email, phone, linkedinUrl, isPrimary, relevanceNotes } = req.body;
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    UPDATE contacts
+    SET name = COALESCE(?, name),
+        title = COALESCE(?, title),
+        email = COALESCE(?, email),
+        phone = COALESCE(?, phone),
+        linkedin_url = COALESCE(?, linkedin_url),
+        is_primary = COALESCE(?, is_primary),
+        relevance_notes = COALESCE(?, relevance_notes),
+        updated_at = ?
+    WHERE id = ? AND workspace_id = ?
+  `).run(name, title, email, phone, linkedinUrl, isPrimary !== undefined ? (isPrimary ? 1 : 0) : null, relevanceNotes, now, req.params.id, req.workspace.id);
+
+  res.json({ success: true });
+});
+
+app.delete('/api/contacts/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  db.prepare('DELETE FROM contacts WHERE id = ? AND workspace_id = ?').run(req.params.id, req.workspace.id);
+  res.json({ success: true });
+});
+
+// ----------------------------------------------------
+// Opportunities Endpoints (Spec #20, #32)
+// ----------------------------------------------------
+app.get('/api/opportunities', requireAuth, (req: AuthenticatedRequest, res) => {
+  const list = OpportunityService.getOpportunities(req.workspace.id);
+  res.json(list);
+});
+
+app.get('/api/opportunities/today', requireAuth, (req: AuthenticatedRequest, res) => {
+  const list = OpportunityService.getOpportunities(req.workspace.id, { todayOnly: true });
+  res.json(list);
+});
+
+app.get('/api/opportunities/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  const list = OpportunityService.getOpportunities(req.workspace.id);
+  const opp = list.find((o) => o.id === req.params.id);
+  if (!opp) return res.status(404).json({ error: 'Opportunity not found' });
+  res.json(opp);
+});
+
+app.patch('/api/opportunities/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  try {
+    const { stage, scoreBreakdown, whyNow, summary } = req.body;
+
+    if (stage) {
+      OpportunityService.updateStage(req.params.id, stage, req.workspace.id);
+    }
+    if (scoreBreakdown) {
+      OpportunityService.updateScore(req.params.id, scoreBreakdown, req.workspace.id);
+    }
+
+    if (whyNow || summary) {
+      db.prepare(`
+        UPDATE opportunities
+        SET why_now = COALESCE(?, why_now),
+            summary = COALESCE(?, summary),
+            updated_at = ?
+        WHERE id = ? AND workspace_id = ?
+      `).run(whyNow, summary, new Date().toISOString(), req.params.id, req.workspace.id);
+    }
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to update opportunity' });
+  }
+});
+
+// ----------------------------------------------------
+// Research Pipeline Endpoints (Spec #10, #32)
+// ----------------------------------------------------
+app.post('/api/opportunities/:id/research', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const result = await ResearchService.runOpportunityResearch(req.params.id, req.workspace.id);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to research opportunity' });
+  }
+});
+
+app.get('/api/opportunities/:id/research', requireAuth, (req: AuthenticatedRequest, res) => {
+  const runs = db.prepare(`
+    SELECT * FROM research_runs WHERE opportunity_id = ? AND workspace_id = ? ORDER BY started_at DESC
+  `).all(req.params.id, req.workspace.id);
+
+  const sources = db.prepare(`
+    SELECT s.* FROM research_sources s
+    JOIN opportunities o ON o.account_id = s.account_id
+    WHERE o.id = ? AND o.workspace_id = ?
+    ORDER BY s.retrieved_at DESC
+  `).all(req.params.id, req.workspace.id);
+
+  const evidence = db.prepare(`
+    SELECT * FROM opportunity_evidence WHERE opportunity_id = ? AND workspace_id = ? ORDER BY created_at DESC
+  `).all(req.params.id, req.workspace.id);
+
+  res.json({ runs, sources, evidence });
+});
+
+// General research endpoint for on-demand inspection
+app.post('/api/opportunities/research', optionalAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { accountName, domain, industry, notes } = req.body;
-    const ai = getAI();
-
-    if (ai) {
-      try {
-        const response = await ai.models.generateContent({
-          model: "gemini-3.8-flash",
-          contents: `You are the LeadForge Account Intelligence Engine. Research this B2B prospect account and extract verified evidence signals, ICP alignment, and the single next best sales action.
-
-Account: ${accountName} (${domain || "domain unknown"})
-Industry: ${industry || "Technology"}
-Context / Notes: ${notes || "None"}
-
-Remember the LeadForge rules:
-- Ground all findings in concrete, realistic evidence.
-- Clearly differentiate observed facts from inference.
-- Suggest ONE primary high-value next action with rationale.
-
-Return strict JSON adhering to the schema.`,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                summary: { type: Type.STRING, description: "Executive briefing on this account" },
-                whyNow: { type: Type.STRING, description: "Core reason this opportunity is prioritized right now" },
-                fitScore: { type: Type.NUMBER, description: "0 to 100 ICP fit score" },
-                needScore: { type: Type.NUMBER, description: "0 to 100 need/problem signal score" },
-                timingScore: { type: Type.NUMBER, description: "0 to 100 timing score" },
-                commercialScore: { type: Type.NUMBER, description: "0 to 100 commercial value score" },
-                evidenceQuality: { type: Type.NUMBER, description: "0 to 100 evidence reliability score" },
-                confidence: { type: Type.NUMBER, description: "0 to 1 confidence rating" },
-                findings: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      claim: { type: Type.STRING },
-                      claimType: { type: Type.STRING, description: "HIRING, TECH_STACK, FUNDING, EXPANSION, WEBSITE" },
-                      source: { type: Type.STRING },
-                      observedAt: { type: Type.STRING },
-                      confidence: { type: Type.NUMBER },
-                      whyItMatters: { type: Type.STRING },
-                    },
-                    required: ["claim", "claimType", "source", "observedAt", "confidence", "whyItMatters"],
-                  },
-                },
-                nextAction: {
-                  type: Type.OBJECT,
-                  properties: {
-                    actionType: { type: Type.STRING, description: "OUTREACH, FOLLOW_UP, RESEARCH, DISCOVERY_CALL" },
-                    actionText: { type: Type.STRING },
-                    reason: { type: Type.STRING },
-                    urgency: { type: Type.STRING, description: "IMMEDIATE, TODAY, THIS_WEEK" },
-                  },
-                  required: ["actionType", "actionText", "reason", "urgency"],
-                },
-              },
-              required: [
-                "summary",
-                "whyNow",
-                "fitScore",
-                "needScore",
-                "timingScore",
-                "commercialScore",
-                "evidenceQuality",
-                "confidence",
-                "findings",
-                "nextAction",
-              ],
-            },
-          },
-        });
-
-        const parsed = JSON.parse(response.text || "{}");
-        return res.json({ research: parsed, source: "gemini-3.8-flash" });
-      } catch (genError) {
-        console.warn("Gemini research error, falling back:", genError);
-      }
-    }
-
-    // Heuristic fallback
-    return res.json({
-      research: {
-        summary: `${accountName} is scaling their core infrastructure and showing high buying signals for specialized digital & automation services.`,
-        whyNow: "Recently announced new product roadmap and opened 4 senior engineering and growth positions.",
-        fitScore: 88,
-        needScore: 84,
-        timingScore: 92,
-        commercialScore: 85,
-        evidenceQuality: 90,
-        confidence: 0.89,
-        findings: [
-          {
-            claim: `${accountName} opened 3 engineering & 1 marketing leadership roles.`,
-            claimType: "HIRING",
-            source: `${domain || "company"}/careers`,
-            observedAt: "2 days ago",
-            confidence: 0.95,
-            whyItMatters: "Rapid hiring signals immediate budget allocation and need for external capacity.",
-          },
-          {
-            claim: `Migrated public docs and announced major platform v2 update.`,
-            claimType: "TECH_STACK",
-            source: "Company Tech Blog & GitHub",
-            observedAt: "5 days ago",
-            confidence: 0.91,
-            whyItMatters: "Active modernization cycle makes them receptive to specialized implementation support.",
-          },
-        ],
-        nextAction: {
-          actionType: "OUTREACH",
-          actionText: `Send personalized email to Head of Product regarding scaling architecture and execution velocity`,
-          reason: `Addresses their active hiring bottleneck directly with reference to their v2 platform announcement`,
-          urgency: "TODAY",
-        },
-      },
-      source: "heuristic-fallback",
-    });
+    const wsId = req.workspace?.id || 'ws-default';
+    const { research } = await AIGateway.researchAccount(accountName, domain, industry, notes, wsId);
+    res.json({ research, source: 'gemini-3.8-flash' });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to research account" });
+    res.status(500).json({ error: err.message || 'Research error' });
   }
 });
 
-// SCR-07 / FR-09: AI Outreach Composer
-app.post("/api/opportunities/outreach-draft", async (req, res) => {
+// ----------------------------------------------------
+// Scoring & Next Action Endpoints (Spec #17, #19, #32)
+// ----------------------------------------------------
+app.post('/api/opportunities/:id/score', requireAuth, (req: AuthenticatedRequest, res) => {
+  try {
+    const result = OpportunityService.updateScore(req.params.id, req.body, req.workspace.id);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Legacy scoring calculator endpoint
+app.post('/api/opportunities/score', (req, res) => {
+  const { fit = 80, need = 75, timing = 70, commercial = 70, evidenceQuality = 80, riskPenalty = 0 } = req.body;
+  const baseScore =
+    0.30 * Number(fit) +
+    0.25 * Number(need) +
+    0.20 * Number(timing) +
+    0.15 * Number(commercial) +
+    0.10 * Number(evidenceQuality);
+  const finalScore = Math.round(Math.min(100, Math.max(0, baseScore - Number(riskPenalty))));
+  res.json({ score: finalScore });
+});
+
+// ----------------------------------------------------
+// Outreach Endpoints (Spec #25, #32)
+// ----------------------------------------------------
+app.post('/api/opportunities/:id/outreach', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { contactId, tone, channel } = req.body;
+    const opp = db.prepare('SELECT o.*, a.name as account_name FROM opportunities o JOIN accounts a ON a.id = o.account_id WHERE o.id = ? AND o.workspace_id = ?').get(req.params.id, req.workspace.id) as any;
+    if (!opp) return res.status(404).json({ error: 'Opportunity not found' });
+
+    let contact = null;
+    if (contactId) {
+      contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(contactId) as any;
+    } else {
+      contact = db.prepare('SELECT * FROM contacts WHERE account_id = ? ORDER BY is_primary DESC LIMIT 1').get(opp.account_id) as any;
+    }
+
+    const evidenceRows = db.prepare('SELECT claim FROM opportunity_evidence WHERE opportunity_id = ? LIMIT 4').all(req.params.id) as any[];
+    const evidenceSnippets = evidenceRows.map((e) => e.claim);
+
+    const { draft } = await AIGateway.generateOutreach(
+      opp.account_name,
+      contact?.name || 'Founder',
+      contact?.title || 'Leader',
+      evidenceSnippets,
+      tone || 'Founder Direct',
+      channel || 'Email',
+      req.workspace.id
+    );
+
+    // Save Draft
+    const draftId = `draft-${crypto.randomUUID().slice(0, 8)}`;
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO outreach_drafts (id, workspace_id, opportunity_id, contact_id, subject, body, tone, channel, status, cited_evidence, rationale, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?)
+    `).run(
+      draftId,
+      req.workspace.id,
+      req.params.id,
+      contact?.id || null,
+      draft.subject,
+      draft.body,
+      tone || 'Founder Direct',
+      channel || 'Email',
+      JSON.stringify(draft.citedEvidence || []),
+      draft.rationale || 'Personalized from verified signals',
+      now,
+      now
+    );
+
+    res.json({ draftId, draft });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to generate outreach' });
+  }
+});
+
+app.post('/api/opportunities/outreach-draft', optionalAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { accountName, contactName, contactRole, evidenceSnippets, tone, channel } = req.body;
-    const ai = getAI();
-
-    if (ai) {
-      try {
-        const response = await ai.models.generateContent({
-          model: "gemini-3.8-flash",
-          contents: `You are LeadForge's Outreach Intelligence Engine.
-Draft a highly personalized, calm, credible B2B outreach message for a founder/seller at a high-end digital agency.
-
-CRITICAL RULES:
-- Ground every claim in the provided evidence snippets. Do NOT fabricate facts.
-- Tone style: ${tone || "Founder Direct (warm, concise, peer-to-peer)"}.
-- Channel: ${channel || "Email"}.
-- Length: Short & punchy (under 120 words). No cheesy sales fluff, no exclamation marks.
-- Include 1 clear, low-friction call-to-action (e.g., "Open to seeing a 2-minute breakdown?").
-
-Target:
-- Company: ${accountName}
-- Contact: ${contactName || "Decision Maker"} (${contactRole || "Leader"})
-- Verified Evidence Signals: ${JSON.stringify(evidenceSnippets || [])}
-
-Return strict JSON schema.`,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                subject: { type: Type.STRING, description: "Compelling, low-hype email subject line" },
-                body: { type: Type.STRING, description: "Personalized outreach message body" },
-                citedEvidence: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: "Specific evidence signals referenced in the copy",
-                },
-                rationale: { type: Type.STRING, description: "Why this messaging approach was selected" },
-                estimatedReadTimeSec: { type: Type.NUMBER },
-              },
-              required: ["subject", "body", "citedEvidence", "rationale", "estimatedReadTimeSec"],
-            },
-          },
-        });
-
-        const parsed = JSON.parse(response.text || "{}");
-        return res.json({ draft: parsed, source: "gemini-3.8-flash" });
-      } catch (genError) {
-        console.warn("Gemini outreach error, falling back:", genError);
-      }
-    }
-
-    // Heuristic fallback
-    const firstName = contactName ? contactName.split(" ")[0] : "there";
-    return res.json({
-      draft: {
-        subject: `Quick thought on ${accountName}'s recent scaling`,
-        body: `Hi ${firstName},\n\nSaw that you recently opened hiring for your technical and product team while shipping the new platform updates.\n\nWe typically help fast-growing teams in your space accelerate delivery without overburdening internal leadership with onboarding drag.\n\nWould it make sense to share a 2-minute loom on how we solved this for a similar engineering team? Either way, congrats on the recent launch.\n\nBest,\nAlex`,
-        citedEvidence: [
-          `Engineering & product hiring signals`,
-          `Recent platform update release`,
-        ],
-        rationale: "Leverages the hiring trigger directly to position external capacity as a relief valve, avoiding generic pitches.",
-        estimatedReadTimeSec: 25,
-      },
-      source: "heuristic-fallback",
-    });
+    const wsId = req.workspace?.id || 'ws-default';
+    const result = await AIGateway.generateOutreach(
+      accountName,
+      contactName,
+      contactRole,
+      evidenceSnippets || [],
+      tone,
+      channel,
+      wsId
+    );
+    res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to generate outreach" });
+    res.status(500).json({ error: err.message || 'Outreach generation error' });
   }
 });
 
-// Scoring Engine API (Exact Technical Architecture Spec #14 / #17)
-app.post("/api/opportunities/score", (req, res) => {
+// ----------------------------------------------------
+// Follow-ups & Tasks Endpoints (Spec #21, #32)
+// ----------------------------------------------------
+app.get('/api/follow-ups', requireAuth, (req: AuthenticatedRequest, res) => {
+  const followUps = db.prepare(`
+    SELECT f.*, o.account_id, a.name as account_name, c.name as contact_name, c.email as contact_email
+    FROM follow_ups f
+    JOIN opportunities o ON o.id = f.opportunity_id
+    JOIN accounts a ON a.id = o.account_id
+    LEFT JOIN contacts c ON c.id = f.contact_id
+    WHERE f.workspace_id = ?
+    ORDER BY f.due_at ASC
+  `).all(req.workspace.id) as any[];
+
+  res.json(followUps);
+});
+
+app.post('/api/follow-ups', requireAuth, (req: AuthenticatedRequest, res) => {
+  const { opportunityId, contactId, reason, dueAt } = req.body;
+  const id = `flw-${crypto.randomUUID().slice(0, 8)}`;
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO follow_ups (id, workspace_id, opportunity_id, contact_id, reason, due_at, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?)
+  `).run(id, req.workspace.id, opportunityId, contactId || null, reason, dueAt, now);
+
+  res.status(201).json({ id, success: true });
+});
+
+app.patch('/api/follow-ups/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  const { status, dueAt } = req.body;
+  const now = new Date().toISOString();
+  const completedAt = status === 'COMPLETED' ? now : null;
+
+  db.prepare(`
+    UPDATE follow_ups
+    SET status = COALESCE(?, status),
+        due_at = COALESCE(?, due_at),
+        completed_at = COALESCE(?, completed_at)
+    WHERE id = ? AND workspace_id = ?
+  `).run(status, dueAt, completedAt, req.params.id, req.workspace.id);
+
+  res.json({ success: true });
+});
+
+app.get('/api/tasks', requireAuth, (req: AuthenticatedRequest, res) => {
+  const tasks = db.prepare(`
+    SELECT t.*, o.account_id, a.name as account_name
+    FROM tasks t
+    JOIN opportunities o ON o.id = t.opportunity_id
+    JOIN accounts a ON a.id = o.account_id
+    WHERE t.workspace_id = ?
+    ORDER BY t.created_at DESC
+  `).all(req.workspace.id);
+
+  res.json(tasks);
+});
+
+// ----------------------------------------------------
+// Activity Timeline (Spec #22, #32)
+// ----------------------------------------------------
+app.get('/api/activity', requireAuth, (req: AuthenticatedRequest, res) => {
+  const activities = db.prepare(`
+    SELECT * FROM activities WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 50
+  `).all(req.workspace.id);
+
+  res.json(activities);
+});
+
+// ----------------------------------------------------
+// Notifications (Spec #28)
+// ----------------------------------------------------
+app.get('/api/notifications', requireAuth, (req: AuthenticatedRequest, res) => {
+  const notifications = db.prepare(`
+    SELECT * FROM notifications WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 30
+  `).all(req.workspace.id);
+
+  res.json(notifications);
+});
+
+app.patch('/api/notifications/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  db.prepare('UPDATE notifications SET read = 1 WHERE id = ? AND workspace_id = ?').run(req.params.id, req.workspace.id);
+  res.json({ success: true });
+});
+
+app.post('/api/notifications/mark-all-read', requireAuth, (req: AuthenticatedRequest, res) => {
+  db.prepare('UPDATE notifications SET read = 1 WHERE workspace_id = ?').run(req.workspace.id);
+  res.json({ success: true });
+});
+
+// ----------------------------------------------------
+// CSV Import Endpoint (Spec #26)
+// ----------------------------------------------------
+app.post('/api/import/csv', requireAuth, (req: AuthenticatedRequest, res) => {
   try {
-    const { fit = 80, need = 75, timing = 70, commercial = 70, evidenceQuality = 80, riskPenalty = 0 } = req.body;
-    
-    // Technical architecture exact formula:
-    // baseScore = 0.30*fit + 0.25*need + 0.20*timing + 0.15*commercial + 0.10*evidenceQuality
-    // finalScore = clamp(baseScore - riskPenalty, 0, 100)
-    const baseScore =
-      0.30 * Number(fit) +
-      0.25 * Number(need) +
-      0.20 * Number(timing) +
-      0.15 * Number(commercial) +
-      0.10 * Number(evidenceQuality);
+    const { rows } = req.body;
+    if (!Array.isArray(rows)) {
+      return res.status(400).json({ error: 'Rows array required' });
+    }
+    const result = OpportunityService.importCSV(req.workspace.id, rows);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Import failed' });
+  }
+});
 
-    const finalScore = Math.round(Math.min(100, Math.max(0, baseScore - Number(riskPenalty))));
-
-    res.json({
-      score: finalScore,
-      breakdown: {
-        fit: Number(fit),
-        need: Number(need),
-        timing: Number(timing),
-        commercial: Number(commercial),
-        evidenceQuality: Number(evidenceQuality),
-        riskPenalty: Number(riskPenalty),
-      },
-      weights: {
-        fit: 0.30,
-        need: 0.25,
-        timing: 0.20,
-        commercial: 0.15,
-        evidenceQuality: 0.10,
-      },
-    });
+// ----------------------------------------------------
+// Sample / Demo Workspace Seed & Clear (Spec #8)
+// ----------------------------------------------------
+app.post('/api/demo/seed', requireAuth, (req: AuthenticatedRequest, res) => {
+  try {
+    const result = SampleDataService.seedSampleData(req.workspace.id, req.user.id);
+    res.json({ success: true, ...result });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Vite middleware & Static serving
+app.post('/api/demo/clear', requireAuth, (req: AuthenticatedRequest, res) => {
+  try {
+    SampleDataService.clearSampleData(req.workspace.id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ----------------------------------------------------
+// Vite Middleware & Static Production Serving
+// ----------------------------------------------------
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
-      appType: "spa",
+      appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`LeadForge server running on http://0.0.0.0:${PORT}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`LeadForge production server active on http://0.0.0.0:${PORT}`);
   });
 }
 

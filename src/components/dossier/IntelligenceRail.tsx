@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Account, Opportunity, EvidenceItem } from '../../types';
+import { Account, Opportunity, EvidenceItem, Contact } from '../../types';
 import { Building2, ExternalLink, Globe, MapPin, Users, Layers, ShieldCheck, RefreshCw, Plus, FileText, XCircle, Sparkles, CheckCircle2 } from 'lucide-react';
+import { PrimaryContactCard } from './PrimaryContactCard';
 
 interface IntelligenceRailProps {
   account: Account;
@@ -11,6 +12,9 @@ interface IntelligenceRailProps {
   onRefreshResearch: () => void;
   onDismiss: () => void;
   isRefreshing?: boolean;
+  onViewResearch?: () => void;
+  primaryContact?: Contact | null;
+  onSelectContactForOutreach?: (contact: Contact) => void;
 }
 
 export const IntelligenceRail: React.FC<IntelligenceRailProps> = ({
@@ -22,6 +26,9 @@ export const IntelligenceRail: React.FC<IntelligenceRailProps> = ({
   onRefreshResearch,
   onDismiss,
   isRefreshing = false,
+  onViewResearch,
+  primaryContact,
+  onSelectContactForOutreach,
 }) => {
   const [newNoteText, setNewNoteText] = useState('');
 
@@ -101,7 +108,15 @@ export const IntelligenceRail: React.FC<IntelligenceRailProps> = ({
         </div>
       </div>
 
-      {/* 2. Signals Overview */}
+      {/* 2. Primary Contact Card */}
+      <PrimaryContactCard
+        contact={primaryContact}
+        opportunity={opportunity}
+        account={account}
+        onSelectContactForOutreach={onSelectContactForOutreach}
+      />
+
+      {/* 3. Signals Overview */}
       <div className="liquid-glass rounded-2xl p-5 sm:p-6 border border-white/[0.08] space-y-4">
         <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
           <span className="text-[10px] font-mono uppercase tracking-widest text-white/50">
@@ -160,6 +175,16 @@ export const IntelligenceRail: React.FC<IntelligenceRailProps> = ({
             <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
             <span>{isRefreshing ? 'Refreshing research…' : 'Refresh research'}</span>
           </button>
+
+          {onViewResearch && (
+            <button
+              onClick={onViewResearch}
+              className="w-full mt-2 py-2 px-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-xs font-ui text-white/90 hover:text-white border border-white/10 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Explore Evidence Workspace →</span>
+            </button>
+          )}
         </div>
       </div>
 

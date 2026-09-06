@@ -25,22 +25,31 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { OnboardingScreen } from './components/OnboardingScreen';
 import { ICPConfirmationScreen } from './components/ICPConfirmationScreen';
 import { FocusModeModal } from './components/FocusModeModal';
+import { ResearchEvidenceWorkspace } from './components/research/ResearchEvidenceWorkspace';
 
 const MainContent: React.FC = () => {
-  const { activeTab, selectedOpportunityId } = useLeadForge();
+  const { activeTab, selectedOpportunityId, opportunitySubView } = useLeadForge();
 
   return (
     <main className="w-full max-w-7xl mx-auto px-4 md:px-8 py-8 flex-1">
       {activeTab === 'overview' && <TodayBriefing />}
       {activeTab === 'opportunities' && (
-        selectedOpportunityId ? <OpportunityDetail /> : <OpportunityList />
+        selectedOpportunityId ? (
+          opportunitySubView === 'research' ? (
+            <ResearchEvidenceWorkspace />
+          ) : (
+            <OpportunityDetail />
+          )
+        ) : (
+          <OpportunityList />
+        )
       )}
       {activeTab === 'pipeline' && <PipelineBoard />}
       {activeTab === 'accounts' && <AccountsView />}
       {activeTab === 'contacts' && <ContactsView />}
       {activeTab === 'tasks' && <TasksView />}
       {activeTab === 'icp' && <ICPBuilder />}
-      {activeTab === 'research' && <ResearchCenter />}
+      {activeTab === 'research' && <ResearchEvidenceWorkspace />}
       {activeTab === 'settings' && <SettingsView />}
     </main>
   );
