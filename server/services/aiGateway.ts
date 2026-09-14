@@ -94,8 +94,9 @@ Adhere strictly to the JSON schema.`,
 
         const parsed = JSON.parse(response.text || '{}');
         recordAIRun(workspaceId, 'PARSE_ICP', 'gemini-3.8-flash', Date.now() - startTime, 'SUCCESS');
-        return { criteria: parsed, source: 'gemini-3.8-flash' };
+        return { criteria: parsed, source: 'gemini-3.8-flash', isFallback: false, aiAvailable: true };
       } catch (err: any) {
+        console.warn('Gemini API call failed in parseICP (falling back to heuristic engine):', err.message);
         recordAIRun(workspaceId, 'PARSE_ICP', 'gemini-3.8-flash', Date.now() - startTime, 'FALLBACK', err.message);
       }
     }
@@ -126,7 +127,15 @@ Adhere strictly to the JSON schema.`,
     };
 
     recordAIRun(workspaceId, 'PARSE_ICP', 'heuristic-engine', Date.now() - startTime, 'SUCCESS');
-    return { criteria: fallbackCriteria, source: 'heuristic-engine' };
+    return {
+      criteria: fallbackCriteria,
+      source: 'heuristic-engine',
+      isFallback: true,
+      aiAvailable: false,
+      fallbackReason: !process.env.GEMINI_API_KEY
+        ? 'GEMINI_API_KEY is not configured.'
+        : 'Configured Gemini credential failed authentication (401 or blocked). Using deterministic heuristic baseline.',
+    };
   }
 
   static async researchAccount(
@@ -214,8 +223,9 @@ Return strict JSON schema.`,
 
         const parsed = JSON.parse(response.text || '{}');
         recordAIRun(workspaceId, 'RESEARCH', 'gemini-3.8-flash', Date.now() - startTime, 'SUCCESS');
-        return { research: parsed, source: 'gemini-3.8-flash' };
+        return { research: parsed, source: 'gemini-3.8-flash', isFallback: false, aiAvailable: true };
       } catch (err: any) {
+        console.warn('Gemini API call failed in researchAccount (falling back to heuristic engine):', err.message);
         recordAIRun(workspaceId, 'RESEARCH', 'gemini-3.8-flash', Date.now() - startTime, 'FALLBACK', err.message);
       }
     }
@@ -260,7 +270,15 @@ Return strict JSON schema.`,
     };
 
     recordAIRun(workspaceId, 'RESEARCH', 'heuristic-engine', Date.now() - startTime, 'SUCCESS');
-    return { research: fallbackResearch, source: 'heuristic-engine' };
+    return {
+      research: fallbackResearch,
+      source: 'heuristic-engine',
+      isFallback: true,
+      aiAvailable: false,
+      fallbackReason: !process.env.GEMINI_API_KEY
+        ? 'GEMINI_API_KEY is not configured.'
+        : 'Configured Gemini credential failed authentication (401 or blocked). Using deterministic heuristic baseline.',
+    };
   }
 
   static async generateOutreach(
@@ -313,8 +331,9 @@ Adhere to JSON schema.`,
 
         const parsed = JSON.parse(response.text || '{}');
         recordAIRun(workspaceId, 'OUTREACH', 'gemini-3.8-flash', Date.now() - startTime, 'SUCCESS');
-        return { draft: parsed, source: 'gemini-3.8-flash' };
+        return { draft: parsed, source: 'gemini-3.8-flash', isFallback: false, aiAvailable: true };
       } catch (err: any) {
+        console.warn('Gemini API call failed in generateOutreach (falling back to heuristic engine):', err.message);
         recordAIRun(workspaceId, 'OUTREACH', 'gemini-3.8-flash', Date.now() - startTime, 'FALLBACK', err.message);
       }
     }
@@ -329,6 +348,32 @@ Adhere to JSON schema.`,
     };
 
     recordAIRun(workspaceId, 'OUTREACH', 'heuristic-engine', Date.now() - startTime, 'SUCCESS');
-    return { draft: fallbackDraft, source: 'heuristic-engine' };
+    return {
+      draft: fallbackDraft,
+      source: 'heuristic-engine',
+      isFallback: true,
+      aiAvailable: false,
+      fallbackReason: !process.env.GEMINI_API_KEY
+        ? 'GEMINI_API_KEY is not configured.'
+        : 'Configured Gemini credential failed authentication (401 or blocked). Using deterministic heuristic baseline.',
+    };
+  }
+
+  static getStatus() {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) {
+      return {
+        aiAvailable: false,
+        activeEngine: 'heuristic-engine',
+        model: 'Deterministic Rule Engine',
+        message: 'No GEMINI_API_KEY detected in environment. Operating in verified heuristic fallback mode.',
+      };
+    }
+    return {
+      aiAvailable: true,
+      activeEngine: 'gemini-3.8-flash',
+      model: 'gemini-3.8-flash',
+      message: 'Gemini API configured. Live inference with automatic graceful fallback.',
+    };
   }
 }

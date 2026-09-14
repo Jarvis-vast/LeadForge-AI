@@ -155,6 +155,18 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
+    getNotes: (id: string) => request<any[]>(`/api/opportunities/${id}/notes`),
+    addNote: (id: string, text: string) =>
+      request<any>(`/api/opportunities/${id}/notes`, {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+      }),
+    getOutreachDraft: (id: string) => request<any>(`/api/opportunities/${id}/outreach-draft`),
+    saveOutreachDraft: (id: string, data: any) =>
+      request<{ success: boolean }>(`/api/opportunities/${id}/outreach-draft`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
   },
 
   // Follow-ups
@@ -175,6 +187,25 @@ export const api = {
   // Tasks
   tasks: {
     list: () => request<any[]>('/api/tasks'),
+    create: (data: { opportunityId: string; title: string; actionType?: string; dueDate?: string; status?: string }) =>
+      request<{ id: string; success: boolean }>('/api/tasks', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: { status?: string; dueDate?: string; title?: string }) =>
+      request<{ success: boolean }>(`/api/tasks/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) =>
+      request<{ success: boolean }>(`/api/tasks/${id}`, {
+        method: 'DELETE',
+      }),
+  },
+
+  // AI Status
+  ai: {
+    status: () => request<{ aiAvailable: boolean; activeEngine: string; model: string; message: string }>('/api/ai/status'),
   },
 
   // Activity

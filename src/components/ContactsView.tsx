@@ -7,6 +7,10 @@ import {
   Search,
   Send,
   ExternalLink,
+  Plus,
+  Edit2,
+  Trash2,
+  X,
 } from 'lucide-react';
 
 export const ContactsView: React.FC = () => {
@@ -17,9 +21,22 @@ export const ContactsView: React.FC = () => {
     openOpportunityDetail,
     setSelectedOpportunityId,
     setOutreachModalOpen,
+    createContact,
+    updateContact,
+    deleteContact,
   } = useLeadForge();
 
   const [search, setSearch] = useState('');
+  const [modalMode, setModalMode] = useState<'create' | 'edit' | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formData, setFormData] = useState({
+    accountId: '',
+    name: '',
+    title: '',
+    email: '',
+    linkedinUrl: '',
+  });
+  const [submitting, setSubmitting] = useState(false);
 
   const filteredContacts = contacts.filter((c) => {
     if (!search.trim()) return true;
@@ -32,6 +49,67 @@ export const ContactsView: React.FC = () => {
       acc?.name.toLowerCase().includes(q)
     );
   });
+
+  const handleOpenCreate = () => {
+    setFormData({
+      accountId: accounts[0]?.id || '',
+      name: '',
+      title: '',
+      email: '',
+      linkedinUrl: '',
+    });
+    setEditingId(null);
+    setModalMode('create');
+  };
+
+  const handleOpenEdit = (cnt: any) => {
+    setFormData({
+      accountId: cnt.accountId || (accounts[0]?.id || ''),
+      name: cnt.name,
+      title: cnt.title || '',
+      email: cnt.email || '',
+      linkedinUrl: cnt.linkedinUrl || '',
+    });
+    setEditingId(cnt.id);
+    setModalMode('edit');
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.name.trim() || !formData.email.trim() || !formData.accountId) return;
+
+    setSubmitting(true);
+    try {
+      const payload = {
+        accountId: formData.accountId,
+        name: formData.name.trim(),
+        title: formData.title.trim(),
+        email: formData.email.trim(),
+        linkedinUrl: formData.linkedinUrl.trim(),
+      };
+
+      if (modalMode === 'create') {
+        await createContact(payload);
+      } else if (modalMode === 'edit' && editingId) {
+        await updateContact(editingId, payload);
+      }
+      setModalMode(null);
+    } catch (err) {
+      console.error('Failed to save contact:', err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDelete = async (id: string, name: string) => {
+    if (window.confirm(`Are you sure you want to delete contact "${name}"?`)) {
+      try {
+        await deleteContact(id);
+      } catch (err) {
+        console.error('Failed to delete contact:', err);
+      }
+    }
+  };
 
   return (
     <div className="space-y-6 animate-fadeIn">
@@ -49,6 +127,14 @@ export const ContactsView: React.FC = () => {
             Target buyers mapped to high-intent opportunities. Peer-to-peer relationships with verified reachability.
           </p>
         </div>
+
+        <button
+          onClick={handleOpenCreate}
+          className="px-4 py-2 rounded-full bg-white text-black hover:bg-white/90 text-xs font-ui font-semibold flex items-center gap-1.5 shadow-sm transition-all shrink-0"
+        >
+          <Plus className="w-4 h-4" />
+          <span>New Contact</span>
+        </button>
       </div>
 
       {/* Search Filter */}
@@ -131,20 +217,34 @@ export const ContactsView: React.FC = () => {
                     </td>
 
                     <td className="py-4 px-5 text-right">
-                      {opp ? (
+                      <div className="flex items-center justify-end gap-2">
+                        {opp ? (
+                          <button
+                            onClick={() => {
+                              setSelectedOpportunityId(opp.id);
+                              setOutreachModalOpen(true);
+                            }}
+                            className="px-3 py-1.5 rounded-full bg-white text-black hover:bg-white/90 text-xs font-semibold inline-flex items-center gap-1.5 shadow-sm transition-all"
+                          >
+                            <Send className="w-3 h-3" />
+                            <span>Outreach</span>
+                          </button>
+                        ) : null}
                         <button
-                          onClick={() => {
-                            setSelectedOpportunityId(opp.id);
-                            setOutreachModalOpen(true);
-                          }}
-                          className="px-3.5 py-1.5 rounded-full bg-white text-black hover:bg-white/90 text-xs font-semibold inline-flex items-center gap-1.5 shadow-sm transition-all"
+                          onClick={() => handleOpenEdit(cnt)}
+                          className="p-1.5 rounded-full hover:bg-white/10 text-white/40 hover:text-white transition-colors"
+                          title="Edit contact"
                         >
-                          <Send className="w-3 h-3" />
-                          <span>Outreach</span>
+                          <Edit2 className="w-3.5 h-3.5" />
                         </button>
-                      ) : (
-                        <span className="text-white/30 text-[11px]">No active opp</span>
-                      )}
+                        <button
+                          onClick={() => handleDelete(cnt.id, cnt.name)}
+                          className="p-1.5 rounded-full hover:bg-white/10 text-white/40 hover:text-red-400 transition-colors"
+                          title="Delete contact"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -153,6 +253,106 @@ export const ContactsView: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {/* Contact Modal */}
+      {modalMode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-neutral-900 border border-white/20 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl animate-fadeIn">
+            <div className="flex items-center justify-between pb-3 border-b border-white/10">
+              <h3 className="font-ui font-semibold text-lg text-white">
+                {modalMode === 'create' ? 'Create Contact' : 'Edit Contact'}
+              </h3>
+              <button
+                onClick={() => setModalMode(null)}
+                className="text-white/40 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSave} className="space-y-3 font-ui text-xs">
+              <div>
+                <label className="block text-white/60 mb-1">Company Account *</label>
+                <select
+                  required
+                  value={formData.accountId}
+                  onChange={(e) => setFormData({ ...formData, accountId: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg bg-neutral-800 border border-white/10 text-white focus:outline-none focus:border-white/30"
+                >
+                  {accounts.map((acc) => (
+                    <option key={acc.id} value={acc.id}>
+                      {acc.name} ({acc.domain})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-white/60 mb-1">Full Name *</label>
+                <input
+                  type="text"
+                  required
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  placeholder="e.g. Jane Doe"
+                  className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/10 text-white focus:outline-none focus:border-white/30"
+                />
+              </div>
+
+              <div>
+                <label className="block text-white/60 mb-1">Job Title / Role</label>
+                <input
+                  type="text"
+                  value={formData.title}
+                  onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                  placeholder="e.g. Chief Technology Officer"
+                  className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/10 text-white focus:outline-none focus:border-white/30"
+                />
+              </div>
+
+              <div>
+                <label className="block text-white/60 mb-1">Email Address *</label>
+                <input
+                  type="email"
+                  required
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  placeholder="e.g. jane@company.com"
+                  className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/10 text-white focus:outline-none focus:border-white/30"
+                />
+              </div>
+
+              <div>
+                <label className="block text-white/60 mb-1">LinkedIn Profile URL</label>
+                <input
+                  type="url"
+                  value={formData.linkedinUrl}
+                  onChange={(e) => setFormData({ ...formData, linkedinUrl: e.target.value })}
+                  placeholder="https://linkedin.com/in/..."
+                  className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/10 text-white focus:outline-none focus:border-white/30"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-white/10">
+                <button
+                  type="button"
+                  onClick={() => setModalMode(null)}
+                  className="px-4 py-2 rounded-full glass-pill text-white/70 hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="px-5 py-2 rounded-full bg-white text-black font-semibold hover:bg-neutral-200 disabled:opacity-50"
+                >
+                  {submitting ? 'Saving...' : modalMode === 'create' ? 'Create Contact' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

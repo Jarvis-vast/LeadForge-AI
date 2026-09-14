@@ -4,5 +4,17 @@ dist/
 coverage/
 .DS_Store
 *.log
+
+# Database & local state
+data/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Environment
 .env*
 !.env.example
+

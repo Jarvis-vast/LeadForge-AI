@@ -89,6 +89,13 @@ interface LeadForgeContextType {
   snoozeTask: (taskId: string) => void;
   addTask: (task: Omit<Task, 'id'>) => void;
   runResearchOnAccount: (oppId: string) => Promise<void>;
+  researchTargetAccount: (targetId: string) => Promise<any>;
+  createAccount: (data: any) => Promise<void>;
+  updateAccount: (id: string, data: any) => Promise<void>;
+  deleteAccount: (id: string) => Promise<void>;
+  createContact: (data: any) => Promise<void>;
+  updateContact: (id: string, data: any) => Promise<void>;
+  deleteContact: (id: string) => Promise<void>;
   updateICP: (updated: Partial<ICPProfile>) => void;
   parseICPWithAI: (prompt: string) => Promise<void>;
   importAccountsFromData: (newAccounts: Partial<Account>[], newContacts?: Partial<Contact>[]) => { imported: number; duplicates: number };
@@ -216,8 +223,81 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return saved ? JSON.parse(saved) : initialWorkspace;
   });
 
-  const [activeTab, setActiveTab] = useState<NavigationTab>('overview');
-  const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>('opp-01');
+  const parseHashState = () => {
+    if (typeof window === 'undefined') return { tab: null, opp: null };
+    const raw = window.location.hash.replace(/^#\/?/, '');
+    if (!raw) return { tab: null, opp: null };
+    const params = new URLSearchParams(raw);
+    const tab = params.get('tab') as NavigationTab | null;
+    const opp = params.get('opp');
+    return { tab, opp };
+  };
+
+  const initialHash = parseHashState();
+  const validTabs: NavigationTab[] = [
+    'overview',
+    'opportunities',
+    'accounts',
+    'contacts',
+    'pipeline',
+    'tasks',
+    'icp',
+    'research',
+    'analytics',
+    'settings',
+  ];
+
+  const [activeTab, setActiveTabState] = useState<NavigationTab>(() => {
+    if (initialHash.tab && validTabs.includes(initialHash.tab)) {
+      return initialHash.tab;
+    }
+    return 'overview';
+  });
+
+  const [selectedOpportunityId, setSelectedOpportunityIdState] = useState<string | null>(() => {
+    if (initialHash.opp) {
+      return initialHash.opp;
+    }
+    return 'opp-01';
+  });
+
+  const updateUrlHash = (tab: NavigationTab, oppId: string | null) => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams();
+    params.set('tab', tab);
+    if (oppId) {
+      params.set('opp', oppId);
+    }
+    const newHash = `#${params.toString()}`;
+    if (window.location.hash !== newHash) {
+      window.history.replaceState(null, '', newHash);
+    }
+  };
+
+  const setActiveTab = (tab: NavigationTab) => {
+    setActiveTabState(tab);
+    updateUrlHash(tab, selectedOpportunityId);
+  };
+
+  const setSelectedOpportunityId = (id: string | null) => {
+    setSelectedOpportunityIdState(id);
+    updateUrlHash(activeTab, id);
+  };
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      const { tab, opp } = parseHashState();
+      if (tab && validTabs.includes(tab)) {
+        setActiveTabState(tab);
+      }
+      if (opp !== undefined && opp !== null) {
+        setSelectedOpportunityIdState(opp);
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
   const [opportunitySubView, setOpportunitySubView] = useState<'dossier' | 'research'>('dossier');
 
   const [opportunities, setOpportunities] = useState<Opportunity[]>(() => {
@@ -907,6 +987,11 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       };
       setTasks((prev) => [newTask, ...prev]);
     }
+
+    // Persist to backend
+    api.opportunities.update(id, { stage: newStage }).catch((err) => {
+      console.warn('Backend update failed:', err);
+    });
   };
 
   const updateOpportunityScore = (id: string, breakdown: Opportunity['scoreBreakdown']) => {
@@ -941,6 +1026,11 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       happenedAt: 'Just now',
     };
     setActivities((prev) => [newActivity, ...prev]);
+
+    // Persist to backend
+    api.opportunities.updateScore(id, breakdown).catch((err) => {
+      console.warn('Backend score update failed:', err);
+    });
   };
 
   const dismissOpportunity = (id: string, reason: string, note?: string) => {
@@ -997,6 +1087,10 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       happenedAt: 'Just now',
     };
     setActivities((prev) => [newActivity, ...prev]);
+
+    api.opportunities.addNote(oppId, text.trim()).catch((err) => {
+      console.warn('Backend add note failed:', err);
+    });
   };
 
   const saveOutreachDraft = (oppId: string, draftData: Partial<OutreachDraft>) => {
@@ -1017,6 +1111,10 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         approvedAt: draftData.approvedAt || existing?.approvedAt,
       };
       return { ...prev, [oppId]: updated };
+    });
+
+    api.opportunities.saveOutreachDraft(oppId, draftData).catch((err) => {
+      console.warn('Backend save draft failed:', err);
     });
   };
 
@@ -1047,7 +1145,7 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
     setActivities((prev) => [newActivity, ...prev]);
 
-    // Transition stage to OUTREACH_DRAFTED or CONTACTED
+    // Transition stage to CONTACTED
     updateOpportunityStage(oppId, 'CONTACTED');
 
     // Create follow-up task 3 days out
@@ -1062,6 +1160,10 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       assignee: 'Alex (You)',
     };
     setTasks((prev) => [followUpTask, ...prev]);
+
+    api.opportunities.saveOutreachDraft(oppId, { ...approvedDraft, status: 'APPROVED' }).catch((err) => {
+      console.warn('Backend approve draft failed:', err);
+    });
   };
 
   const generateOutreachWithAI = async (
@@ -1143,12 +1245,20 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       };
       setActivities((prev) => [newActivity, ...prev]);
     }
+
+    api.tasks.update(taskId, { status: 'COMPLETED' }).catch((err) => {
+      console.warn('Backend complete task failed:', err);
+    });
   };
 
   const snoozeTask = (taskId: string) => {
     setTasks((prev) =>
       prev.map((t) => (t.id === taskId ? { ...t, status: 'SNOOZED', dueAt: 'Tomorrow, 9:00 AM' } : t))
     );
+
+    api.tasks.update(taskId, { status: 'SNOOZED', dueDate: 'Tomorrow, 9:00 AM' }).catch((err) => {
+      console.warn('Backend snooze task failed:', err);
+    });
   };
 
   const addTask = (task: Omit<Task, 'id'>) => {
@@ -1168,11 +1278,32 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       happenedAt: 'Just now',
     };
     setActivities((prev) => [newActivity, ...prev]);
+
+    api.tasks.create({
+      opportunityId: task.opportunityId,
+      title: task.title,
+      dueDate: task.dueAt,
+      status: task.status,
+    }).catch((err) => {
+      console.warn('Backend create task failed:', err);
+    });
   };
 
-  const runResearchOnAccount = async (oppId: string) => {
-    const opp = opportunities.find((o) => o.id === oppId);
+  const runResearchOnAccount = async (targetId: string) => {
+    // targetId can be an opportunity ID or an account ID
+    let opp = opportunities.find((o) => o.id === targetId);
+    if (!opp) {
+      opp = opportunities.find((o) => o.accountId === targetId);
+    }
+    if (!opp && accounts.length > 0) {
+      const acc = accounts.find((a) => a.id === targetId);
+      if (acc) {
+        opp = opportunities[0];
+      }
+    }
     if (!opp) return;
+
+    const oppId = opp.id;
     const acc = accounts.find((a) => a.id === opp.accountId);
 
     const runId = 'run-' + Date.now();
@@ -1181,35 +1312,14 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       opportunityId: oppId,
       accountName: acc?.name || 'Account',
       status: 'RESEARCHING',
-      currentStep: 'Querying public signals and careers portal...',
-      progressPercent: 20,
+      currentStep: 'Querying public signals and verified sources...',
+      progressPercent: 40,
       findingsCount: 0,
       startedAt: 'Just now',
     };
     setResearchRuns((prev) => [newRun, ...prev]);
     setIsAIWorking(true);
     setAiWorkingMessage(`Researching ${acc?.name}: Collecting live signals...`);
-
-    // Simulated step updates to demonstrate meaningful progress (per Design System #22)
-    setTimeout(() => {
-      setResearchRuns((prev) =>
-        prev.map((r) =>
-          r.id === runId
-            ? { ...r, currentStep: 'Analyzing tech stack and hiring surges...', progressPercent: 55 }
-            : r
-        )
-      );
-    }, 1000);
-
-    setTimeout(() => {
-      setResearchRuns((prev) =>
-        prev.map((r) =>
-          r.id === runId
-            ? { ...r, currentStep: 'Synthesizing evidence and computing ICP fit...', progressPercent: 85 }
-            : r
-        )
-      );
-    }, 2000);
 
     try {
       const res = await fetch('/api/opportunities/research', {
@@ -1228,14 +1338,14 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const research = data.research;
 
         // Add newly discovered evidence
-        if (research.findings && research.findings.length > 0) {
+        if (research && research.findings && research.findings.length > 0) {
           const newEvItems: EvidenceItem[] = research.findings.map((f: any, idx: number) => ({
             id: `evi-new-${Date.now()}-${idx}`,
             opportunityId: oppId,
             accountId: opp.accountId,
             claim: f.claim,
             claimType: f.claimType || 'HIRING',
-            sourceUrl: f.source.startsWith('http') ? f.source : `https://${acc?.domain}`,
+            sourceUrl: f.source && f.source.startsWith('http') ? f.source : `https://${acc?.domain}`,
             sourceDomain: acc?.domain || 'web',
             observedAt: f.observedAt || 'Just now',
             capturedAt: new Date().toISOString(),
@@ -1246,43 +1356,45 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
 
         // Update opportunity score and whyNow
-        setOpportunities((prev) =>
-          prev.map((o) =>
-            o.id === oppId
-              ? {
-                  ...o,
-                  score: Math.round(
-                    0.30 * (research.fitScore || 85) +
-                    0.25 * (research.needScore || 80) +
-                    0.20 * (research.timingScore || 85) +
-                    0.15 * (research.commercialScore || 80) +
-                    0.10 * (research.evidenceQuality || 85)
-                  ),
-                  scoreBreakdown: {
-                    fit: research.fitScore || 85,
-                    need: research.needScore || 80,
-                    timing: research.timingScore || 85,
-                    commercial: research.commercialScore || 80,
-                    evidenceQuality: research.evidenceQuality || 85,
-                    riskPenalty: 0,
-                  },
-                  whyNow: research.whyNow || o.whyNow,
-                  nextAction: research.nextAction
-                    ? {
-                        actionType: research.nextAction.actionType || 'OUTREACH',
-                        actionText: research.nextAction.actionText,
-                        reason: research.nextAction.reason,
-                        dueAt: 'Today by 3:00 PM',
-                        urgency: research.nextAction.urgency || 'TODAY',
-                        confidence: 0.92,
-                      }
-                    : o.nextAction,
-                  lastResearchedAt: 'Just now',
-                  updatedAt: new Date().toISOString(),
-                }
-              : o
-          )
-        );
+        if (research) {
+          setOpportunities((prev) =>
+            prev.map((o) =>
+              o.id === oppId
+                ? {
+                    ...o,
+                    score: Math.round(
+                      0.30 * (research.fitScore || 85) +
+                      0.25 * (research.needScore || 80) +
+                      0.20 * (research.timingScore || 85) +
+                      0.15 * (research.commercialScore || 80) +
+                      0.10 * (research.evidenceQuality || 85)
+                    ),
+                    scoreBreakdown: {
+                      fit: research.fitScore || 85,
+                      need: research.needScore || 80,
+                      timing: research.timingScore || 85,
+                      commercial: research.commercialScore || 80,
+                      evidenceQuality: research.evidenceQuality || 85,
+                      riskPenalty: 0,
+                    },
+                    whyNow: research.whyNow || o.whyNow,
+                    nextAction: research.nextAction
+                      ? {
+                          actionType: research.nextAction.actionType || 'OUTREACH',
+                          actionText: research.nextAction.actionText,
+                          reason: research.nextAction.reason,
+                          dueAt: 'Today by 3:00 PM',
+                          urgency: research.nextAction.urgency || 'TODAY',
+                          confidence: 0.92,
+                        }
+                      : o.nextAction,
+                    lastResearchedAt: 'Just now',
+                    updatedAt: new Date().toISOString(),
+                  }
+                : o
+            )
+          );
+        }
 
         setResearchRuns((prev) =>
           prev.map((r) =>
@@ -1290,9 +1402,9 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               ? {
                   ...r,
                   status: 'COMPLETE',
-                  currentStep: `Extracted ${research.findings?.length || 2} new evidence items`,
+                  currentStep: `Extracted ${research?.findings?.length || 2} new evidence items`,
                   progressPercent: 100,
-                  findingsCount: research.findings?.length || 2,
+                  findingsCount: research?.findings?.length || 2,
                   completedAt: 'Just now',
                 }
               : r
@@ -1305,10 +1417,12 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           type: 'RESEARCH_COMPLETED',
           actorType: 'AI',
           actorName: 'LeadForge Research Engine',
-          description: `Completed deep intelligence run. Extracted ${research.findings?.length || 2} verified signals.`,
+          description: `Completed deep intelligence run. Extracted ${research?.findings?.length || 2} verified signals.`,
           happenedAt: 'Just now',
         };
         setActivities((prev) => [newActivity, ...prev]);
+
+        return data;
       }
     } catch (err) {
       console.error('Research run failed:', err);
@@ -1322,6 +1436,70 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     } finally {
       setIsAIWorking(false);
       setAiWorkingMessage('');
+    }
+  };
+
+  const researchTargetAccount = runResearchOnAccount;
+
+  // Account and Contact CRUD
+  const createAccount = async (data: any) => {
+    try {
+      await api.accounts.create(data);
+      await refreshWorkspaceData();
+    } catch (err) {
+      console.error('Failed to create account:', err);
+      throw err;
+    }
+  };
+
+  const updateAccount = async (id: string, data: any) => {
+    try {
+      await api.accounts.update(id, data);
+      setAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, ...data } : a)));
+    } catch (err) {
+      console.error('Failed to update account:', err);
+      throw err;
+    }
+  };
+
+  const deleteAccount = async (id: string) => {
+    try {
+      await api.accounts.delete(id);
+      setAccounts((prev) => prev.filter((a) => a.id !== id));
+      setOpportunities((prev) => prev.filter((o) => o.accountId !== id));
+    } catch (err) {
+      console.error('Failed to delete account:', err);
+      throw err;
+    }
+  };
+
+  const createContact = async (data: any) => {
+    try {
+      await api.contacts.create(data);
+      await refreshWorkspaceData();
+    } catch (err) {
+      console.error('Failed to create contact:', err);
+      throw err;
+    }
+  };
+
+  const updateContact = async (id: string, data: any) => {
+    try {
+      await api.contacts.update(id, data);
+      setContacts((prev) => prev.map((c) => (c.id === id ? { ...c, ...data } : c)));
+    } catch (err) {
+      console.error('Failed to update contact:', err);
+      throw err;
+    }
+  };
+
+  const deleteContact = async (id: string) => {
+    try {
+      await api.contacts.delete(id);
+      setContacts((prev) => prev.filter((c) => c.id !== id));
+    } catch (err) {
+      console.error('Failed to delete contact:', err);
+      throw err;
     }
   };
 
@@ -1541,6 +1719,13 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         snoozeTask,
         addTask,
         runResearchOnAccount,
+        researchTargetAccount,
+        createAccount,
+        updateAccount,
+        deleteAccount,
+        createContact,
+        updateContact,
+        deleteContact,
         updateICP,
         parseICPWithAI,
         importAccountsFromData,

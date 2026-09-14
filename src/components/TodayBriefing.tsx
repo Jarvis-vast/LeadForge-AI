@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useLeadForge } from '../context/LeadForgeContext';
+import { EvidenceCard } from './EvidenceCard';
 import {
   ArrowRight,
   Sparkles,
@@ -19,6 +20,7 @@ import {
   ShieldCheck,
   RefreshCw,
   Search,
+  Send,
 } from 'lucide-react';
 
 export const TodayBriefing: React.FC = () => {
@@ -26,6 +28,7 @@ export const TodayBriefing: React.FC = () => {
     opportunities,
     accounts,
     tasks,
+    evidence,
     openOpportunityDetail,
     setSelectedOpportunityId,
     setOutreachModalOpen,
@@ -38,7 +41,7 @@ export const TodayBriefing: React.FC = () => {
 
   // State to preview First-Use Variant vs Active Operational Briefing
   const [showFirstUseVariant, setShowFirstUseVariant] = useState<boolean>(false);
-  const [aiStatusMessage, setAiStatusMessage] = useState<'AI READY' | 'Researching 12 accounts'>('AI READY');
+  const [aiStatusMessage, setAiStatusMessage] = useState<string>('AI READY');
 
   const handleOpenOpportunity = (oppId: string) => {
     setSelectedOpportunityId(oppId);
@@ -51,136 +54,92 @@ export const TodayBriefing: React.FC = () => {
   };
 
   const handleFindOpportunities = async () => {
-    setAiStatusMessage('Researching 12 accounts');
-    await researchTargetAccount('acc-01');
-    setTimeout(() => {
+    setAiStatusMessage('Researching accounts...');
+    try {
+      const targetId = opportunities[0]?.id || accounts[0]?.id || 'acc-01';
+      if (typeof researchTargetAccount === 'function') {
+        await researchTargetAccount(targetId);
+      }
       setAiStatusMessage('AI READY');
       setShowFirstUseVariant(false);
-    }, 1500);
+    } catch (err) {
+      console.warn('Find opportunities failed:', err);
+      setAiStatusMessage('AI READY');
+    }
   };
 
-  // Structured Opportunities for the Operator Queue
-  const primaryOpportunities = [
-    {
-      index: '01',
-      id: 'opp-01',
-      name: 'Acme SaaS',
-      domain: 'acmesaas.io',
-      score: 94,
-      priorityLabel: 'HIGH PRIORITY',
-      signal: 'Hiring VP Marketing',
-      signalTiming: '2 days ago',
-      recommendedAction: 'Contact founder',
-      actionType: 'open',
-      rationale: 'Series A closed 3 weeks ago + 3 senior technical postings this week = high execution velocity moment',
-    },
-    {
-      index: '02',
-      id: 'opp-02',
-      name: 'Nova Systems',
-      domain: 'novasystems.tech',
-      score: 91,
-      priorityLabel: 'HIGH PRIORITY',
-      signal: 'Launched enterprise product',
-      signalTiming: '4 days ago',
-      recommendedAction: 'Follow up',
-      actionType: 'follow_up',
-      rationale: 'Shipped v2.4 API overhaul with public schema changes; CTO noted bandwidth constraints for custom SDKs',
-    },
-    {
-      index: '03',
-      id: 'opp-03',
-      name: 'Orbit Labs',
-      domain: 'orbitlabs.io',
-      score: 87,
-      priorityLabel: 'HIGH PRIORITY',
-      signal: 'Growing sales team',
-      signalTiming: '6 days ago',
-      recommendedAction: 'Research further',
-      actionType: 'open',
-      rationale: 'Growing sales team with 3 new sales engineering hires; announced new funding round 2 days ago',
-    },
-    {
-      index: '04',
-      id: 'opp-05',
-      name: 'Lumina Commerce',
-      domain: 'luminacommerce.io',
-      score: 79,
-      priorityLabel: 'QUALIFIED',
-      signal: 'Logistics role open 42d',
-      signalTiming: 'Yesterday',
-      recommendedAction: 'Verify contact',
-      actionType: 'open',
-      rationale: 'Unfilled key role proves willingness to buy external fractional engineering capacity',
-    },
-  ];
+  // Dynamic metrics computed from real state (BUG-10)
+  const activeCount = opportunities.length;
+  const highPriorityCount = opportunities.filter((o) => o.score >= 85).length;
+  const dueTasks = tasks.filter((t) => t.status === 'DUE');
+  const followUpsCount = dueTasks.length > 0 ? dueTasks.length : opportunities.filter((o) => o.stage === 'FOLLOW_UP_DUE').length;
+  const newSignalsCount = evidence.filter((e) => !e.isDisputed).length;
+  const needAttentionCount = Math.max(1, opportunities.filter((o) => o.score >= 80 || o.stage === 'FOLLOW_UP_DUE').length);
 
-  // Follow-ups from specification
-  const followUpItems = [
-    {
-      id: 'fu-01',
-      oppId: 'opp-01',
-      company: 'Acme SaaS',
-      subject: 'Follow-up after proposal discussion',
-      time: 'Today · 2:00 PM',
-      actionLabel: 'Review →',
-      action: () => handleOpenOpportunity('opp-01'),
-    },
-    {
-      id: 'fu-02',
-      oppId: 'opp-02',
-      company: 'Nova Systems',
-      subject: 'No reply after first outreach',
-      time: 'Today · 4:30 PM',
-      actionLabel: 'Follow up →',
-      action: () => handleFollowUpAction('opp-02'),
-    },
-    {
-      id: 'fu-03',
-      oppId: 'opp-03',
-      company: 'Orbit Labs',
-      subject: 'Requested pricing information',
-      time: 'Today · 6:00 PM',
-      actionLabel: 'Open →',
-      action: () => handleOpenOpportunity('opp-03'),
-    },
-  ];
+  // Top opportunity recommendation
+  const sortedOpps = [...opportunities].sort((a, b) => b.score - a.score);
+  const topOpp = sortedOpps[0] || null;
+  const topAcc = topOpp ? accounts.find((a) => a.id === topOpp.accountId) : null;
+  const topEvidence = topOpp ? evidence.filter((e) => e.opportunityId === topOpp.id) : [];
 
-  // Recent Signals from specification
-  const recentSignals = [
-    {
-      id: 'sig-01',
-      category: 'Hiring',
-      icon: <Users className="w-3.5 h-3.5 text-white/70" />,
-      company: 'Acme SaaS',
-      claim: 'Acme SaaS added 3 sales roles.',
-      timeAgo: '2h ago',
-    },
-    {
-      id: 'sig-02',
-      category: 'Product launch',
-      icon: <Rocket className="w-3.5 h-3.5 text-white/70" />,
-      company: 'Nova Systems',
-      claim: 'Nova Systems launched an enterprise plan.',
-      timeAgo: 'Yesterday',
-    },
-    {
-      id: 'sig-03',
-      category: 'Funding',
-      icon: <TrendingUp className="w-3.5 h-3.5 text-white/70" />,
-      company: 'Orbit Labs',
-      claim: 'Orbit Labs announced a new funding round.',
-      timeAgo: '2d ago',
-    },
-    {
-      id: 'sig-04',
-      category: 'Platform',
-      icon: <Layers className="w-3.5 h-3.5 text-white/70" />,
-      company: 'HyperFlow AI',
-      claim: 'Traffic volume spiked 8x following product launch.',
-      timeAgo: '3d ago',
-    },
-  ];
+  // Structured Opportunities for the Operator Queue (Dynamic)
+  const primaryOpportunities = sortedOpps.slice(0, 4).map((opp, idx) => {
+    const acc = accounts.find((a) => a.id === opp.accountId);
+    const oppEvi = evidence.filter((e) => e.opportunityId === opp.id);
+    const latestEvi = oppEvi[0];
+    return {
+      index: String(idx + 1).padStart(2, '0'),
+      id: opp.id,
+      name: acc?.name || 'Target Account',
+      domain: acc?.domain || 'domain.com',
+      industry: acc?.industry || 'B2B Tech',
+      score: opp.score,
+      priorityLabel: opp.score >= 85 ? 'HIGH PRIORITY' : opp.score >= 75 ? 'QUALIFIED' : 'EXPLORING',
+      signal: latestEvi?.claim || opp.whyNow || 'High buying intent detected',
+      signalTiming: latestEvi?.observedAt || 'Recently',
+      whyItMatters: opp.whyNow || latestEvi?.whyItMatters || 'Aligned with your target ICP profile with active operational growth signals.',
+      recommendedAction: opp.nextAction?.actionText || (opp.stage === 'FOLLOW_UP_DUE' ? 'Send follow-up message' : 'Review opportunity & send outreach'),
+      actionType: opp.stage === 'FOLLOW_UP_DUE' ? 'follow_up' : 'open',
+    };
+  });
+
+  // Follow-ups from real state
+  const followUpItems = (dueTasks.length > 0 ? dueTasks.slice(0, 3) : tasks.slice(0, 3)).map((item) => ({
+    id: item.id,
+    oppId: item.opportunityId,
+    company: item.accountName || 'Account',
+    subject: item.title,
+    time: item.dueAt || 'Today',
+    actionLabel: 'Review →',
+    action: () => handleOpenOpportunity(item.opportunityId),
+  }));
+
+  // Helper for signal category icons
+  const getSignalIcon = (claimType: string) => {
+    switch (claimType) {
+      case 'HIRING':
+        return <Users className="w-3.5 h-3.5 text-white/70" />;
+      case 'PRODUCT_LAUNCH':
+        return <Rocket className="w-3.5 h-3.5 text-white/70" />;
+      case 'FUNDING':
+        return <TrendingUp className="w-3.5 h-3.5 text-white/70" />;
+      default:
+        return <Layers className="w-3.5 h-3.5 text-white/70" />;
+    }
+  };
+
+  // Recent Signals from real evidence state
+  const recentSignals = evidence.slice(0, 4).map((ev) => {
+    const acc = accounts.find((a) => a.id === ev.accountId);
+    return {
+      id: ev.id,
+      category: ev.claimType.replace('_', ' '),
+      icon: getSignalIcon(ev.claimType),
+      company: acc?.name || 'Account',
+      claim: ev.claim,
+      timeAgo: ev.observedAt || 'Recent',
+    };
+  });
 
   // If user toggles or opportunities empty: Render Section 15 First-Use Variant
   if (showFirstUseVariant) {
@@ -327,49 +286,55 @@ export const TodayBriefing: React.FC = () => {
         {/* Main Briefing Statement */}
         <div className="space-y-2">
           <h2 className="font-editorial italic text-3xl sm:text-4xl lg:text-[44px] text-white font-normal leading-[1.1] tracking-tight">
-            14 opportunities need attention today.
+            {needAttentionCount} {needAttentionCount === 1 ? 'opportunity needs' : 'opportunities need'} attention today.
           </h2>
           <p className="font-ui text-white/70 text-sm sm:text-base font-light">
-            3 are high-priority, 4 need follow-up, and 2 have new buying signals.
+            {highPriorityCount} {highPriorityCount === 1 ? 'is' : 'are'} high-priority, {followUpsCount} need follow-up, and {newSignalsCount} verified signals.
           </p>
         </div>
 
         {/* 6. AI RECOMMENDATION AREA */}
-        <div className="rounded-2xl bg-white/[0.04] hover:bg-white/[0.06] border border-white/[0.12] p-5 sm:p-6 transition-all space-y-4">
-          <div className="text-[11px] font-ui uppercase tracking-widest text-white/50 font-medium flex items-center gap-2">
-            <Sparkles className="w-3.5 h-3.5 text-white/70" />
-            <span>YOUR NEXT MOVE</span>
-          </div>
-
-          <p className="font-ui text-sm sm:text-base text-white/95 leading-relaxed font-normal">
-            Start with <span className="font-medium text-white underline decoration-white/30 underline-offset-4">Acme SaaS</span>. Their new VP of Marketing hire and recent product launch make this a stronger-than-average opportunity for your offer.
-          </p>
-
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
-            <div className="flex items-center gap-3 text-xs font-ui text-white/60">
-              <span className="font-medium text-white">Opportunity score 94</span>
-              <span>·</span>
-              <span className="text-white/70">High confidence</span>
-              <span className="hidden md:inline">·</span>
-              <span className="hidden md:inline text-white/40">Signal detected 2d ago</span>
+        {topOpp && (
+          <div className="rounded-2xl bg-white/[0.04] hover:bg-white/[0.06] border border-white/[0.12] p-5 sm:p-6 transition-all space-y-4">
+            <div className="text-[11px] font-ui uppercase tracking-widest text-white/50 font-medium flex items-center gap-2">
+              <Sparkles className="w-3.5 h-3.5 text-white/70" />
+              <span>YOUR NEXT MOVE</span>
             </div>
 
-            <button
-              onClick={() => handleOpenOpportunity('opp-01')}
-              className="px-4 py-2 rounded-full bg-white text-black font-ui text-xs font-medium hover:bg-neutral-200 transition-all flex items-center gap-1.5 self-start sm:self-auto shrink-0"
-            >
-              <span>Open opportunity</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+            <p className="font-ui text-sm sm:text-base text-white/95 leading-relaxed font-normal">
+              Start with <span className="font-medium text-white underline decoration-white/30 underline-offset-4">{topAcc?.name || 'Top Opportunity'}</span>. {topOpp.whyNow}
+            </p>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
+              <div className="flex items-center gap-3 text-xs font-ui text-white/60">
+                <span className="font-medium text-white">Opportunity score {topOpp.score}</span>
+                <span>·</span>
+                <span className="text-white/70">{topOpp.confidence ? `${Math.round(topOpp.confidence * 100)}% confidence` : 'High confidence'}</span>
+                {topEvidence[0] && (
+                  <>
+                    <span className="hidden md:inline">·</span>
+                    <span className="hidden md:inline text-white/40">{topEvidence[0].observedAt}</span>
+                  </>
+                )}
+              </div>
+
+              <button
+                onClick={() => handleOpenOpportunity(topOpp.id)}
+                className="px-4 py-2 rounded-full bg-white text-black font-ui text-xs font-medium hover:bg-neutral-200 transition-all flex items-center gap-1.5 self-start sm:self-auto shrink-0"
+              >
+                <span>Open opportunity</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* 7. BRIEFING SUMMARY METRICS */}
         <div className="pt-4 border-t border-white/[0.08] grid grid-cols-2 md:grid-cols-4 gap-6 sm:gap-8">
-          {/* Metric 1: Opportunities 42 Active */}
+          {/* Metric 1: Opportunities Active */}
           <div className="space-y-1">
             <div className="font-editorial italic text-3xl sm:text-4xl text-white leading-none">
-              42
+              {activeCount}
             </div>
             <div className="font-ui text-xs text-white/50 uppercase tracking-wider font-medium">
               Opportunities
@@ -379,10 +344,10 @@ export const TodayBriefing: React.FC = () => {
             </div>
           </div>
 
-          {/* Metric 2: Today's actions 14 Need attention */}
+          {/* Metric 2: Today's actions Need attention */}
           <div className="space-y-1">
             <div className="font-editorial italic text-3xl sm:text-4xl text-white leading-none">
-              14
+              {needAttentionCount}
             </div>
             <div className="font-ui text-xs text-white/50 uppercase tracking-wider font-medium">
               Today&apos;s actions
@@ -392,10 +357,10 @@ export const TodayBriefing: React.FC = () => {
             </div>
           </div>
 
-          {/* Metric 3: High priority 8 Score 85+ */}
+          {/* Metric 3: High priority Score 85+ */}
           <div className="space-y-1">
             <div className="font-editorial italic text-3xl sm:text-4xl text-white leading-none">
-              8
+              {highPriorityCount}
             </div>
             <div className="font-ui text-xs text-white/50 uppercase tracking-wider font-medium">
               High priority
@@ -405,10 +370,10 @@ export const TodayBriefing: React.FC = () => {
             </div>
           </div>
 
-          {/* Metric 4: Follow-ups 4 Due today */}
+          {/* Metric 4: Follow-ups Due today */}
           <div className="space-y-1">
             <div className="font-editorial italic text-3xl sm:text-4xl text-white leading-none">
-              4
+              {followUpsCount}
             </div>
             <div className="font-ui text-xs text-white/50 uppercase tracking-wider font-medium">
               Follow-ups
@@ -450,73 +415,107 @@ export const TodayBriefing: React.FC = () => {
           </div>
 
           {/* 10 & 11. OPPORTUNITY CARDS */}
-          <div className="space-y-3">
+          <div className="space-y-4">
             {primaryOpportunities.map((opp, idx) => (
               <motion.div
                 key={opp.id}
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3, delay: 0.15 + idx * 0.05 }}
-                className="group rounded-2xl liquid-glass-subtle border border-white/[0.08] hover:border-white/[0.2] hover:bg-white/[0.05] p-5 sm:p-6 transition-all duration-200 shadow-sm relative"
+                className="group rounded-2xl liquid-glass-strong border border-white/[0.08] hover:border-white/[0.22] hover:bg-white/[0.04] p-5 sm:p-6 transition-all duration-200 shadow-md relative"
               >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  {/* Left: Index, Company & Signal */}
-                  <div className="flex items-start gap-4 min-w-0">
-                    <span className="font-ui text-xs font-mono text-white/30 pt-1 shrink-0">
-                      {opp.index}
-                    </span>
+                <div className="space-y-4">
+                  {/* Row 1: Index, Company info & AI Score Badge */}
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-start gap-3.5 min-w-0">
+                      <span className="font-ui text-xs font-mono text-white/30 pt-1 shrink-0">
+                        {opp.index}
+                      </span>
 
-                    <div className="space-y-1.5 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-ui font-medium text-base sm:text-lg text-white group-hover:text-white transition-colors">
-                          {opp.name}
-                        </span>
-                        <span className="text-xs font-ui text-white/40">
-                          {opp.domain}
-                        </span>
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className="font-ui font-semibold text-base sm:text-lg text-white group-hover:text-white transition-colors">
+                            {opp.name}
+                          </h3>
+                          <span className="text-xs font-ui text-white/40">
+                            {opp.domain}
+                          </span>
+                          <span className="text-[10px] font-ui px-2 py-0.5 rounded-full bg-white/[0.04] border border-white/10 text-white/60">
+                            {opp.industry}
+                          </span>
+                        </div>
+
+                        {/* Verified Signal Pill */}
+                        <div className="flex items-center gap-2 text-xs font-ui text-white/75">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          <span className="font-medium text-white/90">{opp.signal}</span>
+                          <span className="text-white/40">· {opp.signalTiming}</span>
+                        </div>
                       </div>
+                    </div>
 
-                      {/* Signal & Recommended Action */}
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-ui">
-                        <span className="text-white/80 font-medium flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-white/70" />
-                          {opp.signal}
+                    {/* AI Score Display */}
+                    <div className="text-right shrink-0">
+                      <div className="inline-flex items-baseline gap-1">
+                        <span className="font-editorial italic text-3xl sm:text-4xl text-white leading-none">
+                          {opp.score}
                         </span>
-                        <span className="text-white/40 font-light">
-                          Signal: {opp.signalTiming}
-                        </span>
-                        <span className="text-white/40 hidden sm:inline">·</span>
-                        <span className="text-white/60 font-light">
-                          Action: <span className="text-white/90">{opp.recommendedAction}</span>
-                        </span>
+                        <span className="text-[10px] font-mono text-white/40">/100</span>
+                      </div>
+                      <div className="text-[9px] font-mono tracking-widest text-white/50 uppercase mt-0.5">
+                        {opp.priorityLabel}
                       </div>
                     </div>
                   </div>
 
-                  {/* Right: 11. OPPORTUNITY SCORE VISUAL + CTA */}
-                  <div className="flex items-center justify-between sm:justify-end gap-5 shrink-0 pt-2 sm:pt-0 border-t border-white/[0.06] sm:border-t-0">
-                    {/* Compact Score Visual */}
-                    <div className="text-right">
-                      <div className="font-editorial italic text-2xl sm:text-3xl text-white leading-none">
-                        {opp.score}
-                      </div>
-                      <div className="text-[10px] font-mono tracking-widest text-white/50 uppercase mt-0.5">
-                        {opp.priorityLabel}
-                      </div>
+                  {/* Row 2: Why It Matters Callout */}
+                  <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06] space-y-1">
+                    <div className="text-[10px] font-mono uppercase tracking-widest text-white/40 font-medium">
+                      Why It Matters
+                    </div>
+                    <p className="font-ui text-xs sm:text-sm text-white/80 font-light leading-relaxed">
+                      {opp.whyItMatters}
+                    </p>
+                  </div>
+
+                  {/* Row 3: Recommended Next Action & CTAs */}
+                  <div className="pt-2 border-t border-white/[0.06] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-ui">
+                    <div className="flex items-center gap-2 text-white/70">
+                      <span className="text-[10px] font-mono uppercase tracking-wider text-white/40">
+                        Next Action:
+                      </span>
+                      <span className="font-medium text-white/90 bg-white/[0.05] px-2.5 py-1 rounded-full border border-white/10">
+                        {opp.recommendedAction}
+                      </span>
                     </div>
 
-                    {/* Action Button */}
-                    <button
-                      onClick={() =>
-                        opp.actionType === 'follow_up'
-                          ? handleFollowUpAction(opp.id)
-                          : handleOpenOpportunity(opp.id)
-                      }
-                      className="px-4 py-2 rounded-full bg-white/[0.08] hover:bg-white text-white hover:text-black font-ui text-xs font-medium border border-white/[0.12] transition-all flex items-center gap-1.5 group-hover:shadow-md"
-                    >
-                      <span>Open</span>
-                      <ArrowRight className="w-3 h-3 transition-transform group-hover:translate-x-0.5" />
-                    </button>
+                    <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                      {opp.actionType === 'follow_up' ? (
+                        <button
+                          onClick={() => handleFollowUpAction(opp.id)}
+                          className="px-4 py-2 rounded-full bg-white text-black font-ui text-xs font-semibold hover:bg-white/90 transition-all flex items-center gap-1.5 shadow-sm"
+                        >
+                          <Send className="w-3 h-3" />
+                          <span>Send Follow-up</span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleFollowUpAction(opp.id)}
+                          className="px-4 py-2 rounded-full bg-white text-black font-ui text-xs font-semibold hover:bg-white/90 transition-all flex items-center gap-1.5 shadow-sm"
+                        >
+                          <Send className="w-3 h-3" />
+                          <span>Outreach</span>
+                        </button>
+                      )}
+
+                      <button
+                        onClick={() => handleOpenOpportunity(opp.id)}
+                        className="px-3.5 py-2 rounded-full glass-pill hover:bg-white/10 text-white font-ui text-xs font-medium transition-all flex items-center gap-1"
+                      >
+                        <span>Dossier</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </motion.div>
@@ -539,7 +538,7 @@ export const TodayBriefing: React.FC = () => {
                 Follow-ups
               </h3>
               <span className="text-xs font-ui text-white/50 font-light">
-                4 due today
+                {followUpsCount} due
               </span>
             </div>
 
@@ -575,7 +574,7 @@ export const TodayBriefing: React.FC = () => {
             </div>
           </motion.div>
 
-          {/* 13. RECENT SIGNALS */}
+          {/* 13. EVIDENCE SIGNALS (EVIDENCE CARDS) */}
           <motion.div
             initial={{ opacity: 0, filter: 'blur(8px)', y: 16 }}
             animate={{ opacity: 1, filter: 'blur(0px)', y: 0 }}
@@ -584,40 +583,31 @@ export const TodayBriefing: React.FC = () => {
             className="rounded-3xl liquid-glass-subtle border border-white/[0.1] p-6 space-y-5 shadow-lg"
           >
             <div className="space-y-0.5">
-              <h3 className="font-ui font-medium text-base text-white">
-                Recent Signals
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="font-ui font-medium text-base text-white">
+                  Evidence Cards
+                </h3>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/10 text-white/70">
+                  {evidence.length} verified
+                </span>
+              </div>
               <p className="text-xs font-ui text-white/50 font-light">
-                New information from your accounts
+                Live signals feeding AI scores and timing triggers
               </p>
             </div>
 
             <div className="space-y-3">
-              {recentSignals.map((sig) => (
-                <div
-                  key={sig.id}
-                  className="flex items-start gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.06] hover:bg-white/[0.04] transition-all"
-                >
-                  <div className="p-2 rounded-lg bg-white/[0.06] border border-white/10 shrink-0 mt-0.5">
-                    {sig.icon}
-                  </div>
-
-                  <div className="space-y-1 min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] font-ui font-medium text-white/50 uppercase tracking-wider">
-                        {sig.category}
-                      </span>
-                      <span className="text-[11px] font-ui text-white/40">
-                        {sig.timeAgo}
-                      </span>
-                    </div>
-
-                    <p className="text-xs font-ui text-white/80 font-light leading-snug">
-                      {sig.claim}
-                    </p>
-                  </div>
-                </div>
-              ))}
+              {evidence.slice(0, 3).map((ev) => {
+                const acc = accounts.find((a) => a.id === ev.accountId);
+                return (
+                  <EvidenceCard
+                    key={ev.id}
+                    evidence={ev}
+                    companyName={acc?.name}
+                    compact={true}
+                  />
+                );
+              })}
             </div>
           </motion.div>
         </div>
@@ -673,7 +663,7 @@ export const TodayBriefing: React.FC = () => {
         </div>
 
         <div className="text-[11px] font-ui text-white/40 font-light hidden sm:block">
-          Research refreshed today · 14 opportunities queued
+          Research refreshed today · {activeCount} {activeCount === 1 ? 'opportunity' : 'opportunities'} queued
         </div>
       </motion.div>
     </div>

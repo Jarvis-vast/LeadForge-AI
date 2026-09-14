@@ -103,8 +103,11 @@ app.post('/api/auth/register', (req, res) => {
 app.post('/api/auth/login', (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || typeof email !== 'string') {
+    if (!email || typeof email !== 'string' || !email.trim()) {
       return res.status(400).json({ error: 'Valid email address is required.' });
+    }
+    if (!password || typeof password !== 'string' || !password.trim()) {
+      return res.status(401).json({ error: 'Password is required.' });
     }
     const session = AuthService.login(email, password);
     res.json(session);
@@ -314,6 +317,11 @@ app.get('/api/accounts/:id', requireAuth, (req: AuthenticatedRequest, res) => {
 });
 
 app.patch('/api/accounts/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  const existing = db.prepare('SELECT id FROM accounts WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspace.id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Account not found in this workspace' });
+  }
+
   const { name, domain, industry, size, location, description, status } = req.body;
   const now = new Date().toISOString();
 
@@ -334,7 +342,10 @@ app.patch('/api/accounts/:id', requireAuth, (req: AuthenticatedRequest, res) => 
 });
 
 app.delete('/api/accounts/:id', requireAuth, (req: AuthenticatedRequest, res) => {
-  db.prepare('DELETE FROM accounts WHERE id = ? AND workspace_id = ?').run(req.params.id, req.workspace.id);
+  const result = db.prepare('DELETE FROM accounts WHERE id = ? AND workspace_id = ?').run(req.params.id, req.workspace.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: 'Account not found in this workspace' });
+  }
   res.json({ success: true });
 });
 
@@ -369,10 +380,43 @@ app.get('/api/contacts', requireAuth, (req: AuthenticatedRequest, res) => {
   );
 });
 
+app.get('/api/contacts/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  const c = db.prepare(`
+    SELECT c.*, a.name as account_name, a.domain as account_domain
+    FROM contacts c
+    JOIN accounts a ON a.id = c.account_id
+    WHERE c.id = ? AND c.workspace_id = ?
+  `).get(req.params.id, req.workspace.id) as any;
+
+  if (!c) return res.status(404).json({ error: 'Contact not found in this workspace' });
+
+  res.json({
+    id: c.id,
+    accountId: c.account_id,
+    accountName: c.account_name,
+    accountDomain: c.account_domain,
+    name: c.name,
+    title: c.title,
+    email: c.email,
+    phone: c.phone,
+    linkedinUrl: c.linkedin_url,
+    isPrimary: Boolean(c.is_primary),
+    authorityLevel: c.authority_level,
+    relevanceNotes: c.relevance_notes,
+    createdAt: c.created_at,
+  });
+});
+
 app.post('/api/contacts', requireAuth, (req: AuthenticatedRequest, res) => {
   const { accountId, name, title, email, phone, linkedinUrl, isPrimary, relevanceNotes } = req.body;
   if (!accountId || !name || !title) {
     return res.status(400).json({ error: 'accountId, name, and title are required.' });
+  }
+
+  // Enforce account belongs to user workspace
+  const account = db.prepare('SELECT id FROM accounts WHERE id = ? AND workspace_id = ?').get(accountId, req.workspace.id);
+  if (!account) {
+    return res.status(404).json({ error: 'Target account not found in this workspace' });
   }
 
   const id = `cnt-${crypto.randomUUID().slice(0, 8)}`;
@@ -387,6 +431,11 @@ app.post('/api/contacts', requireAuth, (req: AuthenticatedRequest, res) => {
 });
 
 app.patch('/api/contacts/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  const existing = db.prepare('SELECT id FROM contacts WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspace.id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Contact not found in this workspace' });
+  }
+
   const { name, title, email, phone, linkedinUrl, isPrimary, relevanceNotes } = req.body;
   const now = new Date().toISOString();
 
@@ -407,7 +456,10 @@ app.patch('/api/contacts/:id', requireAuth, (req: AuthenticatedRequest, res) => 
 });
 
 app.delete('/api/contacts/:id', requireAuth, (req: AuthenticatedRequest, res) => {
-  db.prepare('DELETE FROM contacts WHERE id = ? AND workspace_id = ?').run(req.params.id, req.workspace.id);
+  const result = db.prepare('DELETE FROM contacts WHERE id = ? AND workspace_id = ?').run(req.params.id, req.workspace.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: 'Contact not found in this workspace' });
+  }
   res.json({ success: true });
 });
 
@@ -433,6 +485,9 @@ app.get('/api/opportunities/:id', requireAuth, (req: AuthenticatedRequest, res) 
 
 app.patch('/api/opportunities/:id', requireAuth, (req: AuthenticatedRequest, res) => {
   try {
+    const opp = db.prepare('SELECT id FROM opportunities WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspace.id);
+    if (!opp) return res.status(404).json({ error: 'Opportunity not found in this workspace' });
+
     const { stage, scoreBreakdown, whyNow, summary } = req.body;
 
     if (stage) {
@@ -659,6 +714,208 @@ app.get('/api/tasks', requireAuth, (req: AuthenticatedRequest, res) => {
   `).all(req.workspace.id);
 
   res.json(tasks);
+});
+
+app.post('/api/tasks', requireAuth, (req: AuthenticatedRequest, res) => {
+  const { opportunityId, title, actionType, dueDate, status } = req.body;
+  if (!opportunityId || !title) {
+    return res.status(400).json({ error: 'opportunityId and title are required' });
+  }
+
+  // Enforce opportunity belongs to user's workspace
+  const opp = db.prepare('SELECT id FROM opportunities WHERE id = ? AND workspace_id = ?').get(opportunityId, req.workspace.id);
+  if (!opp) {
+    return res.status(404).json({ error: 'Opportunity not found in this workspace' });
+  }
+
+  const id = `tsk-${crypto.randomUUID().slice(0, 8)}`;
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO tasks (id, workspace_id, opportunity_id, title, action_type, due_date, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, req.workspace.id, opportunityId, title, actionType || 'FOLLOW_UP', dueDate || 'Today', status || 'DUE', now);
+
+  res.status(201).json({ id, success: true });
+});
+
+app.patch('/api/tasks/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  const { status, dueDate, title } = req.body;
+  const result = db.prepare(`
+    UPDATE tasks
+    SET status = COALESCE(?, status),
+        due_date = COALESCE(?, due_date),
+        title = COALESCE(?, title)
+    WHERE id = ? AND workspace_id = ?
+  `).run(status, dueDate, title, req.params.id, req.workspace.id);
+
+  if (result.changes === 0) {
+    return res.status(404).json({ error: 'Task not found in this workspace' });
+  }
+
+  res.json({ success: true });
+});
+
+app.delete('/api/tasks/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  const result = db.prepare('DELETE FROM tasks WHERE id = ? AND workspace_id = ?').run(req.params.id, req.workspace.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: 'Task not found in this workspace' });
+  }
+  res.json({ success: true });
+});
+
+// ----------------------------------------------------
+// Opportunity Notes Endpoints (Spec #22, #32)
+// ----------------------------------------------------
+app.get('/api/opportunities/:id/notes', requireAuth, (req: AuthenticatedRequest, res) => {
+  const opp = db.prepare('SELECT id FROM opportunities WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspace.id);
+  if (!opp) return res.status(404).json({ error: 'Opportunity not found in this workspace' });
+
+  const notes = db.prepare(`
+    SELECT * FROM opportunity_notes
+    WHERE opportunity_id = ? AND workspace_id = ?
+    ORDER BY created_at DESC
+  `).all(req.params.id, req.workspace.id);
+
+  res.json(notes);
+});
+
+app.post('/api/opportunities/:id/notes', requireAuth, (req: AuthenticatedRequest, res) => {
+  const opp = db.prepare(`
+    SELECT o.*, a.name as account_name
+    FROM opportunities o
+    JOIN accounts a ON a.id = o.account_id
+    WHERE o.id = ? AND o.workspace_id = ?
+  `).get(req.params.id, req.workspace.id) as any;
+
+  if (!opp) return res.status(404).json({ error: 'Opportunity not found in this workspace' });
+
+  const { text } = req.body;
+  if (!text || !text.trim()) {
+    return res.status(400).json({ error: 'Note text is required' });
+  }
+
+  const id = `nte-${crypto.randomUUID().slice(0, 8)}`;
+  const now = new Date().toISOString();
+  const authorName = req.user?.name || 'Seller';
+
+  db.prepare(`
+    INSERT INTO opportunity_notes (id, workspace_id, opportunity_id, author_name, text, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, req.workspace.id, req.params.id, authorName, text.trim(), now);
+
+  // Record Activity
+  db.prepare(`
+    INSERT INTO activities (id, workspace_id, type, title, detail, opportunity_id, account_name, timestamp, created_at)
+    VALUES (?, ?, 'NOTE_ADDED', ?, ?, ?, ?, 'Just now', ?)
+  `).run(
+    crypto.randomUUID(),
+    req.workspace.id,
+    `Note Added: ${opp.account_name}`,
+    text.trim().slice(0, 100),
+    req.params.id,
+    opp.account_name,
+    now
+  );
+
+  res.status(201).json({
+    id,
+    workspaceId: req.workspace.id,
+    opportunityId: req.params.id,
+    authorName,
+    text: text.trim(),
+    createdAt: now,
+  });
+});
+
+// ----------------------------------------------------
+// Outreach Drafts Persistence Endpoints (Spec #25, #32)
+// ----------------------------------------------------
+app.get('/api/opportunities/:id/outreach-draft', requireAuth, (req: AuthenticatedRequest, res) => {
+  const opp = db.prepare('SELECT id FROM opportunities WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspace.id);
+  if (!opp) return res.status(404).json({ error: 'Opportunity not found in this workspace' });
+
+  const draft = db.prepare(`
+    SELECT * FROM outreach_drafts
+    WHERE opportunity_id = ? AND workspace_id = ?
+    ORDER BY updated_at DESC LIMIT 1
+  `).get(req.params.id, req.workspace.id) as any;
+
+  if (!draft) return res.status(404).json({ error: 'No draft found for this opportunity' });
+
+  res.json({
+    id: draft.id,
+    opportunityId: draft.opportunity_id,
+    subject: draft.subject,
+    body: draft.body,
+    tone: draft.tone,
+    channel: draft.channel,
+    status: draft.status,
+    citedEvidence: draft.cited_evidence ? JSON.parse(draft.cited_evidence) : [],
+    rationale: draft.rationale,
+    updatedAt: draft.updated_at,
+  });
+});
+
+app.patch('/api/opportunities/:id/outreach-draft', requireAuth, (req: AuthenticatedRequest, res) => {
+  const opp = db.prepare(`
+    SELECT o.*, a.name as account_name
+    FROM opportunities o
+    JOIN accounts a ON a.id = o.account_id
+    WHERE o.id = ? AND o.workspace_id = ?
+  `).get(req.params.id, req.workspace.id) as any;
+
+  if (!opp) return res.status(404).json({ error: 'Opportunity not found in this workspace' });
+
+  const { subject, body, status, tone, channel } = req.body;
+  const now = new Date().toISOString();
+
+  const existing = db.prepare(`
+    SELECT id FROM outreach_drafts WHERE opportunity_id = ? AND workspace_id = ?
+  `).get(req.params.id, req.workspace.id) as any;
+
+  if (existing) {
+    db.prepare(`
+      UPDATE outreach_drafts
+      SET subject = COALESCE(?, subject),
+          body = COALESCE(?, body),
+          status = COALESCE(?, status),
+          tone = COALESCE(?, tone),
+          channel = COALESCE(?, channel),
+          updated_at = ?
+      WHERE id = ? AND workspace_id = ?
+    `).run(subject, body, status, tone, channel, now, existing.id, req.workspace.id);
+  } else {
+    const draftId = `draft-${crypto.randomUUID().slice(0, 8)}`;
+    db.prepare(`
+      INSERT INTO outreach_drafts (id, workspace_id, opportunity_id, subject, body, status, tone, channel, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(draftId, req.workspace.id, req.params.id, subject || 'Initial Note', body || '', status || 'DRAFT', tone || 'FOUNDER_DIRECT', channel || 'EMAIL', now, now);
+  }
+
+  if (status === 'APPROVED') {
+    db.prepare(`
+      INSERT INTO activities (id, workspace_id, type, title, detail, opportunity_id, account_name, timestamp, created_at)
+      VALUES (?, ?, 'OUTREACH_GENERATED', ?, ?, ?, ?, 'Just now', ?)
+    `).run(
+      crypto.randomUUID(),
+      req.workspace.id,
+      `Outreach Note Approved: ${opp.account_name}`,
+      `Subject: ${subject || 'Outreach note ready for delivery'}`,
+      req.params.id,
+      opp.account_name,
+      now
+    );
+  }
+
+  res.json({ success: true });
+});
+
+// ----------------------------------------------------
+// AI Engine Status Endpoint (Spec #13, #22)
+// ----------------------------------------------------
+app.get('/api/ai/status', (req, res) => {
+  res.json(AIGateway.getStatus());
 });
 
 // ----------------------------------------------------

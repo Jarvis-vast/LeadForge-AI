@@ -141,18 +141,26 @@ export class AuthService {
   }
 
   static login(email: string, password?: string): AuthSession {
+    if (!email || typeof email !== 'string' || !email.trim()) {
+      throw new Error('Valid email address is required.');
+    }
+    if (!password || typeof password !== 'string' || !password.trim()) {
+      throw new Error('Password is required.');
+    }
+
     const normalizedEmail = email.trim().toLowerCase();
     const userRow = db.prepare('SELECT * FROM profiles WHERE email = ?').get(normalizedEmail) as any;
     if (!userRow) {
-      // Auto-provision if passwordless / email-link login
-      return this.register(email, password);
+      throw new Error('Invalid email or password.');
     }
 
-    if (userRow.password_hash && password) {
-      const isValid = verifyPassword(password, userRow.password_hash);
-      if (!isValid) {
-        throw new Error('Invalid email or password.');
-      }
+    if (!userRow.password_hash) {
+      throw new Error('Invalid email or password.');
+    }
+
+    const isValid = verifyPassword(password, userRow.password_hash);
+    if (!isValid) {
+      throw new Error('Invalid email or password.');
     }
 
     // Resolve default workspace for this user
