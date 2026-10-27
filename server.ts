@@ -142,12 +142,38 @@ app.post('/api/auth/logout', (req, res) => {
 // ----------------------------------------------------
 app.get('/api/workspace', requireAuth, (req: AuthenticatedRequest, res) => {
   const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(req.workspace.id) as any;
+  if (ws && ws.onboarding_data) {
+    try {
+      ws.onboardingData = JSON.parse(ws.onboarding_data);
+    } catch {}
+  }
   res.json(ws || req.workspace);
 });
 
 app.patch('/api/workspace', requireAuth, (req: AuthenticatedRequest, res) => {
-  const { name, website, description, currency, timezone } = req.body;
+  const {
+    name,
+    website,
+    description,
+    currency,
+    timezone,
+    onboarding_completed,
+    onboarding_skipped,
+    onboarding_data,
+  } = req.body;
   const now = new Date().toISOString();
+
+  if (website !== undefined && website !== null && typeof website === 'string' && website.trim() !== '') {
+    const trimmed = website.trim();
+    const urlPattern = /^(https?:\/\/)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(:\d+)?(\/.*)?$/;
+    if (!urlPattern.test(trimmed)) {
+      return res.status(400).json({ error: 'Please enter a valid website URL.' });
+    }
+  }
+
+  const serializedData = onboarding_data !== undefined
+    ? (typeof onboarding_data === 'object' && onboarding_data !== null ? JSON.stringify(onboarding_data) : onboarding_data)
+    : undefined;
 
   db.prepare(`
     UPDATE workspaces
@@ -156,11 +182,30 @@ app.patch('/api/workspace', requireAuth, (req: AuthenticatedRequest, res) => {
         description = COALESCE(?, description),
         currency = COALESCE(?, currency),
         timezone = COALESCE(?, timezone),
+        onboarding_completed = COALESCE(?, onboarding_completed),
+        onboarding_skipped = COALESCE(?, onboarding_skipped),
+        onboarding_data = COALESCE(?, onboarding_data),
         updated_at = ?
     WHERE id = ?
-  `).run(name, website, description, currency, timezone, now, req.workspace.id);
+  `).run(
+    name !== undefined ? name : null,
+    website !== undefined ? website : null,
+    description !== undefined ? description : null,
+    currency !== undefined ? currency : null,
+    timezone !== undefined ? timezone : null,
+    onboarding_completed !== undefined ? (onboarding_completed ? 1 : 0) : null,
+    onboarding_skipped !== undefined ? (onboarding_skipped ? 1 : 0) : null,
+    serializedData !== undefined ? serializedData : null,
+    now,
+    req.workspace.id
+  );
 
-  const updated = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(req.workspace.id);
+  const updated = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(req.workspace.id) as any;
+  if (updated && updated.onboarding_data) {
+    try {
+      updated.onboardingData = JSON.parse(updated.onboarding_data);
+    } catch {}
+  }
   res.json(updated);
 });
 

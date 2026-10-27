@@ -60,6 +60,7 @@ const AppShell: React.FC = () => {
     isAuthenticated,
     isLoadingSession,
     isOnboardingCompleted,
+    isOnboardingSkipped,
     isICPConfirmed,
     enterFocusMode,
     isFocusModeOpen,
@@ -107,13 +108,13 @@ const AppShell: React.FC = () => {
     return <WelcomeScreen />;
   }
 
-  // Screen 02: If authenticated but onboarding incomplete, display Workspace Onboarding
-  if (!isOnboardingCompleted) {
+  // Screen 02: If authenticated but onboarding incomplete and not skipped, display Workspace Onboarding
+  if (!isOnboardingCompleted && !isOnboardingSkipped) {
     return <OnboardingScreen />;
   }
 
-  // Screen 03: If onboarding completed but ICP not yet approved, display ICP Setup / Confirmation
-  if (!isICPConfirmed) {
+  // Screen 03: If onboarding completed (and not skipped) but ICP not yet approved, display ICP Setup / Confirmation
+  if (isOnboardingCompleted && !isICPConfirmed) {
     return <ICPConfirmationScreen />;
   }
 

@@ -5,8 +5,8 @@ coverage/
 .DS_Store
 *.log
 
-# Database & local state
-data/
+# Database & local state (only root data folder)
+/data/
 *.db
 *.db-journal
 *.db-shm

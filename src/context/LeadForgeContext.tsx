@@ -115,9 +115,11 @@ interface LeadForgeContextType {
   // Onboarding (Screen 02 Workspace Onboarding)
   isOnboardingCompleted: boolean;
   setIsOnboardingCompleted: (completed: boolean) => void;
+  isOnboardingSkipped: boolean;
+  setIsOnboardingSkipped: (skipped: boolean) => void;
   completeOnboarding: (data: OnboardingData) => Promise<void>;
-  skipOnboarding: () => void;
-  reopenOnboarding: () => void;
+  skipOnboarding: () => Promise<void>;
+  reopenOnboarding: () => Promise<void>;
 
   // ICP Setup / Confirmation (Screen 03)
   isICPConfirmed: boolean;
@@ -448,10 +450,41 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             localStorage.setItem('leadforge_auth', 'true');
             localStorage.setItem('leadforge_user', JSON.stringify(res.user));
             if (res.workspace) {
+              const ws = res.workspace;
+              const backendCompleted = Boolean(ws.onboarding_completed);
+              const backendSkipped = Boolean(ws.onboarding_skipped);
+              let savedData = ws.onboardingData || null;
+              if (!savedData && ws.onboarding_data) {
+                try { savedData = JSON.parse(ws.onboarding_data); } catch {}
+              }
+
+              if (savedData) {
+                setOnboardingData(savedData);
+                localStorage.setItem("leadforge_onboarding_data", JSON.stringify(savedData));
+              }
+
+              if (backendCompleted) {
+                setIsOnboardingCompleted(true);
+                setIsOnboardingSkipped(false);
+                localStorage.setItem("leadforge_onboarding_completed", "true");
+                localStorage.removeItem("leadforge_onboarding_skipped");
+              } else if (backendSkipped) {
+                setIsOnboardingCompleted(false);
+                setIsOnboardingSkipped(true);
+                localStorage.setItem("leadforge_onboarding_skipped", "true");
+                localStorage.removeItem("leadforge_onboarding_completed");
+              } else {
+                setIsOnboardingCompleted(false);
+                setIsOnboardingSkipped(false);
+                localStorage.removeItem("leadforge_onboarding_completed");
+                localStorage.removeItem("leadforge_onboarding_skipped");
+              }
+
               setWorkspace((prev) => ({
                 ...prev,
-                name: res.workspace.name || prev.name,
-                website: res.workspace.website || prev.website,
+                name: ws.name || prev.name,
+                website: ws.website || prev.website,
+                businessProfile: ws.description || prev.businessProfile,
               }));
             }
             refreshWorkspaceData();
@@ -538,6 +571,8 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.removeItem('leadforge_user');
     setIsOnboardingCompleted(false);
     localStorage.removeItem('leadforge_onboarding_completed');
+    localStorage.removeItem('leadforge_onboarding_skipped');
+    setIsOnboardingSkipped(false);
     setIsICPConfirmed(false);
     localStorage.removeItem('leadforge_icp_confirmed');
   };
@@ -598,6 +633,11 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const [isOnboardingCompleted, setIsOnboardingCompleted] = useState<boolean>(() => {
     const saved = localStorage.getItem('leadforge_onboarding_completed');
+    return saved === 'true';
+  });
+
+  const [isOnboardingSkipped, setIsOnboardingSkipped] = useState<boolean>(() => {
+    const saved = localStorage.getItem('leadforge_onboarding_skipped');
     return saved === 'true';
   });
 
@@ -664,22 +704,35 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return defaultStructuredICP;
   });
 
-  const completeOnboarding = async (data: OnboardingData) => {
-    setOnboardingData(data);
-    localStorage.setItem('leadforge_onboarding_data', JSON.stringify(data));
+  const completeOnboarding = async (data: OnboardingData): Promise<void> => {
+    // Validate required fields
+    if (!data.workspaceName || !data.workspaceName.trim()) {
+      throw new Error('Please provide your workspace or agency name.');
+    }
+    if (!data.whatYouSell || !data.whatYouSell.trim()) {
+      throw new Error('Add a little more detail about what you sell.');
+    }
+    if (!data.whoYouSellTo || !data.whoYouSellTo.trim()) {
+      throw new Error('Describe who you sell to in plain language.');
+    }
+    if (!data.geographies || data.geographies.length === 0) {
+      throw new Error('Please select at least one target geography.');
+    }
+    if (data.geographies.includes('Custom') && (!data.customGeography || !data.customGeography.trim())) {
+      throw new Error('Please specify your custom target geography.');
+    }
+    if (data.website && data.website.trim()) {
+      const urlPattern = /^(https?:\/\/)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(:\d+)?(\/.*)?$/;
+      if (!urlPattern.test(data.website.trim())) {
+        throw new Error('Please enter a valid website URL (e.g. https://yourcompany.com).');
+      }
+    }
 
-    // Update workspace settings
-    const updatedWs: WorkspaceSettings = {
-      ...workspace,
-      name: data.workspaceName.trim() || workspace.name,
-      businessProfile: data.whatYouSell.trim() || workspace.businessProfile,
-      primaryService: data.whatYouSell.trim() || workspace.primaryService,
-      website: data.website?.trim() || workspace.website,
-    };
-    setWorkspace(updatedWs);
-    localStorage.setItem('leadforge_workspace', JSON.stringify(updatedWs));
+    const trimmedName = data.workspaceName.trim();
+    const trimmedSell = data.whatYouSell.trim();
+    const trimmedAudience = data.whoYouSellTo.trim();
+    const trimmedWebsite = data.website?.trim() || undefined;
 
-    // Update ICP Profile based on user inputs
     const geoList =
       data.geographies.includes('Custom') && data.customGeography
         ? [
@@ -688,13 +741,47 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           ]
         : data.geographies;
 
+    const icpSummary = `${trimmedSell} tailored for ${trimmedAudience}${
+      geoList.length > 0 ? ` across ${geoList.join(', ')}` : ''
+    }.`;
+
+    // Persist real backend data: throws on network or server failure
+    await Promise.all([
+      api.workspace.update({
+        name: trimmedName,
+        website: trimmedWebsite,
+        description: trimmedSell,
+        onboarding_completed: 1,
+        onboarding_skipped: 0,
+        onboarding_data: data,
+      }),
+      api.icp.update({
+        name: `${trimmedName} ICP Definition`,
+        summary: icpSummary,
+        geographies: geoList,
+        isConfirmed: false,
+      }),
+    ]);
+
+    // On successful persistence: update local application state
+    setOnboardingData(data);
+    localStorage.setItem('leadforge_onboarding_data', JSON.stringify(data));
+
+    const updatedWs: WorkspaceSettings = {
+      ...workspace,
+      name: trimmedName || workspace.name,
+      businessProfile: trimmedSell || workspace.businessProfile,
+      primaryService: trimmedSell || workspace.primaryService,
+      website: trimmedWebsite || workspace.website,
+    };
+    setWorkspace(updatedWs);
+    localStorage.setItem('leadforge_workspace', JSON.stringify(updatedWs));
+
     const updatedICP: ICPProfile = {
       ...icp,
-      name: `${data.workspaceName.trim() || 'Core'} ICP Definition`,
-      summary: `${data.whatYouSell.trim()} tailored for ${data.whoYouSellTo.trim()}${
-        geoList.length > 0 ? ` across ${geoList.join(', ')}` : ''
-      }.`,
-      naturalLanguageDefinition: `We sell ${data.whatYouSell.trim()} targeting ${data.whoYouSellTo.trim()}${
+      name: `${trimmedName} ICP Definition`,
+      summary: icpSummary,
+      naturalLanguageDefinition: `We sell ${trimmedSell} targeting ${trimmedAudience}${
         geoList.length > 0 ? ` in ${geoList.join(', ')}` : ''
       }.`,
       criteria: {
@@ -705,46 +792,52 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setIcp(updatedICP);
     localStorage.setItem('leadforge_icp', JSON.stringify(updatedICP));
 
-    // Update Structured ICP
     const synthesized: StructuredICP = {
       ...defaultStructuredICP,
-      customerType: data.whoYouSellTo.trim() || 'Founder-led B2B SaaS companies',
+      customerType: trimmedAudience || 'Founder-led B2B SaaS companies',
       geography:
         geoList.length > 0 ? geoList : ['India', 'United States', 'United Kingdom'],
-      offerFit: data.whatYouSell.trim()
-        ? `Your ${data.whatYouSell.trim()} aligns with companies actively investing in growth and operational efficiency.`
+      offerFit: trimmedSell
+        ? `Your ${trimmedSell} aligns with companies actively investing in growth and operational efficiency.`
         : 'Your AI automation service aligns with companies actively investing in growth and operational efficiency.',
     };
     setStructuredICP(synthesized);
     localStorage.setItem('leadforge_structured_icp', JSON.stringify(synthesized));
 
     setIsOnboardingCompleted(true);
+    setIsOnboardingSkipped(false);
     localStorage.setItem('leadforge_onboarding_completed', 'true');
+    localStorage.removeItem('leadforge_onboarding_skipped');
     setIsICPConfirmed(false);
     localStorage.removeItem('leadforge_icp_confirmed');
-
-    try {
-      api.workspace.update({
-        name: data.workspaceName.trim(),
-        website: data.website?.trim(),
-        description: data.whatYouSell.trim(),
-      });
-    } catch {
-      // ignore
-    }
   };
 
-  const skipOnboarding = () => {
-    setIsOnboardingCompleted(true);
-    localStorage.setItem('leadforge_onboarding_completed', 'true');
-    setIsICPConfirmed(true);
-    localStorage.setItem('leadforge_icp_confirmed', 'true');
-  };
-
-  const reopenOnboarding = () => {
+  const skipOnboarding = async (): Promise<void> => {
+    // Explicitly persist skipped onboarding state without falsely marking onboarding as complete
+    await api.workspace.update({
+      onboarding_skipped: 1,
+      onboarding_completed: 0,
+    });
+    setIsOnboardingSkipped(true);
     setIsOnboardingCompleted(false);
+    localStorage.setItem('leadforge_onboarding_skipped', 'true');
+    localStorage.removeItem('leadforge_onboarding_completed');
+    setIsICPConfirmed(false);
+    localStorage.removeItem('leadforge_icp_confirmed');
+  };
+
+  const reopenOnboarding = async (): Promise<void> => {
+    try {
+      await api.workspace.update({
+        onboarding_skipped: 0,
+        onboarding_completed: 0,
+      });
+    } catch {}
+    setIsOnboardingCompleted(false);
+    setIsOnboardingSkipped(false);
     setIsICPConfirmed(false);
     localStorage.removeItem('leadforge_onboarding_completed');
+    localStorage.removeItem('leadforge_onboarding_skipped');
     localStorage.removeItem('leadforge_icp_confirmed');
   };
 
@@ -1748,6 +1841,8 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         logout,
         isOnboardingCompleted,
         setIsOnboardingCompleted,
+        isOnboardingSkipped,
+        setIsOnboardingSkipped,
         completeOnboarding,
         skipOnboarding,
         reopenOnboarding,

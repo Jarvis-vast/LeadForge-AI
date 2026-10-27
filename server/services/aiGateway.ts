@@ -26,6 +26,8 @@ function recordAIRun(
   errorMessage?: string
 ) {
   try {
+    const ws = db.prepare("SELECT id FROM workspaces WHERE id = ?").get(workspaceId);
+    if (!ws) return;
     db.prepare(`
       INSERT INTO ai_runs (id, workspace_id, operation, model, latency_ms, status, error_message, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)

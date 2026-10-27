@@ -1,9 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { NetworkConstellation } from './NetworkConstellation';
 import { useLeadForge } from '../context/LeadForgeContext';
 import { OnboardingData } from '../types';
-import { Sparkles, Loader2, Check, ArrowRight } from 'lucide-react';
+import { api } from '../lib/api';
+import { Sparkles, Loader2, Check, ArrowRight, AlertCircle } from 'lucide-react';
 
 const GEOGRAPHY_OPTIONS = [
   'India',
@@ -14,37 +15,65 @@ const GEOGRAPHY_OPTIONS = [
   'Custom',
 ];
 
-export const OnboardingScreen: React.FC = () => {
-  const { completeOnboarding, skipOnboarding } = useLeadForge();
+function isValidWebsiteUrl(urlStr: string): boolean {
+  const trimmed = urlStr.trim();
+  if (!trimmed) return true;
+  try {
+    const toCheck = trimmed.includes('://') ? trimmed : `https://${trimmed}`;
+    const parsed = new URL(toCheck);
+    return Boolean(parsed.hostname && parsed.hostname.includes('.') && parsed.hostname.length >= 4);
+  } catch {
+    return false;
+  }
+}
 
-  // Form State
-  const [workspaceName, setWorkspaceName] = useState('');
-  const [whatYouSell, setWhatYouSell] = useState('');
-  const [whoYouSellTo, setWhoYouSellTo] = useState('');
-  const [selectedGeos, setSelectedGeos] = useState<string[]>(['India', 'United States']);
-  const [customGeo, setCustomGeo] = useState('');
-  const [website, setWebsite] = useState('');
+export const OnboardingScreen: React.FC = () => {
+  const { completeOnboarding, skipOnboarding, workspace, onboardingData } = useLeadForge();
+
+  // Form State with pre-population
+  const [workspaceName, setWorkspaceName] = useState(onboardingData?.workspaceName || workspace?.name || '');
+  const [whatYouSell, setWhatYouSell] = useState(onboardingData?.whatYouSell || '');
+  const [whoYouSellTo, setWhoYouSellTo] = useState(onboardingData?.whoYouSellTo || '');
+  const [selectedGeos, setSelectedGeos] = useState<string[]>(
+    onboardingData?.geographies && onboardingData.geographies.length > 0
+      ? onboardingData.geographies
+      : ['India', 'United States']
+  );
+  const [customGeo, setCustomGeo] = useState(onboardingData?.customGeography || '');
+  const [website, setWebsite] = useState(onboardingData?.website || workspace?.website || '');
+
+  // Keep form in sync if workspace/onboardingData loads asynchronously
+  useEffect(() => {
+    if (onboardingData) {
+      if (!workspaceName && onboardingData.workspaceName) setWorkspaceName(onboardingData.workspaceName);
+      if (!whatYouSell && onboardingData.whatYouSell) setWhatYouSell(onboardingData.whatYouSell);
+      if (!whoYouSellTo && onboardingData.whoYouSellTo) setWhoYouSellTo(onboardingData.whoYouSellTo);
+      if (onboardingData.geographies && onboardingData.geographies.length > 0) {
+        setSelectedGeos(onboardingData.geographies);
+      }
+      if (onboardingData.customGeography) setCustomGeo(onboardingData.customGeography);
+      if (!website && onboardingData.website) setWebsite(onboardingData.website);
+    } else if (workspace) {
+      if (!workspaceName && workspace.name) setWorkspaceName(workspace.name);
+      if (!website && workspace.website) setWebsite(workspace.website);
+    }
+  }, [onboardingData, workspace]);
 
   // AI Assistance states
   const [isImprovingSell, setIsImprovingSell] = useState(false);
   const [sellSuggestion, setSellSuggestion] = useState<string | null>(null);
+  const [sellAiNotice, setSellAiNotice] = useState<string | null>(null);
 
   const [isImprovingAudience, setIsImprovingAudience] = useState(false);
   const [audienceSuggestion, setAudienceSuggestion] = useState<string | null>(null);
+  const [audienceAiNotice, setAudienceAiNotice] = useState<string | null>(null);
 
-  // Validation
+  // Validation & Submission States
   const [validationError, setValidationError] = useState<string | null>(null);
-
-  // Submission & Loading Progression
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [currentLoadingStage, setCurrentLoadingStage] = useState<number>(0);
+  const [isSkipping, setIsSkipping] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
-
-  const loadingStages = [
-    'Understanding your offer',
-    'Defining your ideal customer',
-    'Preparing your first opportunities',
-  ];
 
   // Motion variants
   const entranceVariant = {
@@ -69,49 +98,78 @@ export const OnboardingScreen: React.FC = () => {
     });
   };
 
-  // AI Improvement for "What do you sell?"
-  const handleImproveSell = () => {
+  // Real AI Improvement for "What do you sell?"
+  const handleImproveSell = async () => {
+    const raw = whatYouSell.trim();
+    if (!raw) {
+      setValidationError('Please enter what you sell first so AI has context to refine.');
+      return;
+    }
+    setValidationError(null);
+    setSellAiNotice(null);
     setIsImprovingSell(true);
-    setTimeout(() => {
-      const raw = whatYouSell.trim();
-      let suggestion = 'AI automation systems for growing B2B companies';
-      if (raw.toLowerCase().includes('design') || raw.toLowerCase().includes('ux')) {
-        suggestion = 'High-velocity UI/UX design systems and product design for venture-backed SaaS';
-      } else if (raw.toLowerCase().includes('dev') || raw.toLowerCase().includes('code') || raw.toLowerCase().includes('software')) {
-        suggestion = 'Full-stack cloud engineering and autonomous workflow automation for modern enterprises';
-      } else if (raw.toLowerCase().includes('market') || raw.toLowerCase().includes('seo') || raw.toLowerCase().includes('growth')) {
-        suggestion = 'Outcome-driven B2B outbound demand generation and algorithmic pipeline acquisition';
-      } else if (raw.length > 10) {
-        suggestion = `${raw.charAt(0).toUpperCase() + raw.slice(1)} engineered for high-growth tech companies`;
+    try {
+      const res = await api.icp.parse(`Refine B2B sales offer and service proposition: ${raw}`);
+      if (!res || (res as any).aiAvailable === false || (res as any).isFallback) {
+        setSellAiNotice('AI provider is currently unavailable. Your text was preserved.');
+      } else {
+        const suggested = res.criteria?.summary || (res.criteria?.name ? `${res.criteria.name}: ${raw}` : raw);
+        if (suggested && suggested.trim() !== raw) {
+          setSellSuggestion(suggested.trim());
+        } else {
+          setSellAiNotice('Your current description is already clear and concise.');
+        }
       }
-      setSellSuggestion(suggestion);
+    } catch (err: any) {
+      setSellAiNotice(err.message || 'AI service unavailable. Your original text was preserved.');
+    } finally {
       setIsImprovingSell(false);
-    }, 550);
+    }
   };
 
-  // AI Improvement for "Who do you sell to?"
-  const handleImproveAudience = () => {
+  // Real AI Improvement for "Who do you sell to?"
+  const handleImproveAudience = async () => {
+    const raw = whoYouSellTo.trim();
+    if (!raw) {
+      setValidationError('Please enter who you sell to first so AI has context to refine.');
+      return;
+    }
+    setValidationError(null);
+    setAudienceAiNotice(null);
     setIsImprovingAudience(true);
-    setTimeout(() => {
-      const raw = whoYouSellTo.trim();
-      let suggestion = 'Founder-led SaaS and tech-enabled companies with 10–100 employees';
-      if (raw.toLowerCase().includes('enterprise') || raw.toLowerCase().includes('large')) {
-        suggestion = 'Mid-market to enterprise engineering leaders and VP of Technologies';
-      } else if (raw.toLowerCase().includes('agency') || raw.toLowerCase().includes('firm')) {
-        suggestion = 'High-performing boutique agencies seeking scalable technical execution partners';
-      } else if (raw.toLowerCase().includes('start') || raw.toLowerCase().includes('seed')) {
-        suggestion = 'Funded Seed and Series A startups scaling their core technical infrastructure';
-      } else if (raw.length > 8) {
-        suggestion = `${raw.charAt(0).toUpperCase() + raw.slice(1)} with demonstrated operational velocity`;
+    try {
+      const res = await api.icp.parse(`Refine target buyer roles, company stages, and ideal customer profile: ${raw}`);
+      if (!res || (res as any).aiAvailable === false || (res as any).isFallback) {
+        setAudienceAiNotice('AI provider is currently unavailable. Your text was preserved.');
+      } else {
+        const buyerRoles = res.criteria?.buyerRoles?.length ? res.criteria.buyerRoles.slice(0, 3).join(', ') : '';
+        const industries = res.criteria?.industries?.length ? res.criteria.industries.slice(0, 2).join(' and ') : '';
+        let suggested = '';
+        if (buyerRoles && industries) {
+          suggested = `${buyerRoles} at high-growth ${industries} organizations`;
+        } else if (res.criteria?.summary) {
+          suggested = res.criteria.summary;
+        } else {
+          suggested = raw;
+        }
+
+        if (suggested && suggested.trim() !== raw) {
+          setAudienceSuggestion(suggested.trim());
+        } else {
+          setAudienceAiNotice('Your target audience description is already well-defined.');
+        }
       }
-      setAudienceSuggestion(suggestion);
+    } catch (err: any) {
+      setAudienceAiNotice(err.message || 'AI service unavailable. Your original text was preserved.');
+    } finally {
       setIsImprovingAudience(false);
-    }, 550);
+    }
   };
 
-  // Submit Handler
+  // Submit Handler: Real operation with real backend persistence
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting || isSkipping) return;
     setValidationError(null);
 
     // Validation checks
@@ -127,41 +185,59 @@ export const OnboardingScreen: React.FC = () => {
       setValidationError('Describe who you sell to in plain language.');
       return;
     }
+    if (selectedGeos.length === 0) {
+      setValidationError('Please select at least one geography.');
+      return;
+    }
+    if (selectedGeos.includes('Custom') && !customGeo.trim()) {
+      setValidationError('Please specify your custom target geography.');
+      return;
+    }
+    if (website.trim() && !isValidWebsiteUrl(website)) {
+      setValidationError('Please enter a valid website URL (e.g. acme.com or https://acme.com).');
+      return;
+    }
 
     setIsSubmitting(true);
+    setStatusMessage('Configuring workspace & target ICP…');
 
-    // Progression of loading stages
-    // Stage 0: Understanding your offer
-    setCurrentLoadingStage(0);
-
-    setTimeout(() => {
-      // Stage 1: Defining your ideal customer
-      setCurrentLoadingStage(1);
-    }, 600);
-
-    setTimeout(() => {
-      // Stage 2: Preparing your first opportunities
-      setCurrentLoadingStage(2);
-    }, 1200);
-
-    setTimeout(async () => {
-      setIsSuccess(true);
+    try {
       const data: OnboardingData = {
         workspaceName: workspaceName.trim(),
         whatYouSell: whatYouSell.trim(),
         whoYouSellTo: whoYouSellTo.trim(),
         geographies: selectedGeos,
-        customGeography: customGeo.trim() || undefined,
+        customGeography: selectedGeos.includes('Custom') ? customGeo.trim() : undefined,
         website: website.trim() || undefined,
       };
 
-      setTimeout(async () => {
-        await completeOnboarding(data);
-      }, 700);
-    }, 1850);
+      // Persists through backend to SQLite; throws if persistence fails
+      await completeOnboarding(data);
+      setIsSuccess(true);
+      setStatusMessage('Your sales context is ready.');
+    } catch (err: any) {
+      // In case of error: preserve all inputs, display actionable message, and allow retry
+      setValidationError(err.message || 'Failed to save onboarding configuration. Your entered values have been preserved. Please try again.');
+      setStatusMessage(null);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  // Format Geography display for AI preview
+  // Skip Handler: Explicitly persists skipped status
+  const handleSkip = async () => {
+    if (isSubmitting || isSkipping) return;
+    setValidationError(null);
+    setIsSkipping(true);
+    try {
+      await skipOnboarding();
+    } catch (err: any) {
+      setValidationError(err.message || 'Failed to update workspace settings. Please try again.');
+      setIsSkipping(false);
+    }
+  };
+
+  // Format Geography display for preview
   const geographyDisplay = useMemo(() => {
     const list = [...selectedGeos];
     if (list.includes('Custom') && customGeo.trim()) {
@@ -173,7 +249,7 @@ export const OnboardingScreen: React.FC = () => {
 
   return (
     <div className="relative min-h-screen w-full bg-[#000000] text-white flex flex-col justify-between overflow-x-hidden font-ui select-none">
-      {/* Subtle cinematic background language established on Screen 01 */}
+      {/* Cinematic background language */}
       <NetworkConstellation />
 
       {/* Main Content Area */}
@@ -186,7 +262,7 @@ export const OnboardingScreen: React.FC = () => {
           animate="animate"
           transition={{ delay: 0.05 }}
         >
-          {/* Top-left: LF mark in 44px liquid-glass circle + LeadForge Barlow Medium */}
+          {/* Top-left: LF mark */}
           <div className="flex items-center gap-3.5">
             <div className="w-11 h-11 rounded-full glass-strong border border-white/[0.18] flex items-center justify-center shadow-lg luminous-edge">
               <span className="font-ui font-semibold text-sm tracking-wider text-white">
@@ -198,13 +274,13 @@ export const OnboardingScreen: React.FC = () => {
             </span>
           </div>
 
-          {/* Top-right: Understated progress indicator: 1 of 3 (Barlow, rgba(255,255,255,0.45)) */}
+          {/* Top-right: Understated progress indicator */}
           <div className="flex items-center gap-1.5 text-xs sm:text-sm font-ui font-normal text-white/[0.45] tracking-widest uppercase">
             <span>1 of 3</span>
           </div>
         </motion.header>
 
-        {/* MAIN COMPOSITION: Centered content column, max-width ~760px, vertically centered with slight upward bias */}
+        {/* MAIN COMPOSITION */}
         <div className="w-full max-w-[760px] mx-auto my-auto py-8 sm:py-12 flex flex-col items-center">
           {/* PAGE KICKER */}
           <motion.div
@@ -219,7 +295,7 @@ export const OnboardingScreen: React.FC = () => {
             </span>
           </motion.div>
 
-          {/* MAIN HEADLINE: Instrument Serif italic */}
+          {/* MAIN HEADLINE */}
           <motion.h1
             className="w-full text-center sm:text-left font-editorial italic text-white text-[44px] sm:text-[56px] lg:text-[66px] leading-[0.92] tracking-[-0.02em] font-normal mb-3"
             variants={entranceVariant}
@@ -241,7 +317,7 @@ export const OnboardingScreen: React.FC = () => {
             A few details are enough to start. LeadForge will use them to identify the companies most worth your attention.
           </motion.p>
 
-          {/* FORM CONTAINER: Spacious vertical form in subtle liquid-glass panel (approx 680-720px, radius 24px) */}
+          {/* FORM CONTAINER */}
           <motion.form
             onSubmit={handleSubmit}
             className="w-full max-w-[720px] rounded-[24px] glass-panel border border-white/[0.10] p-6 sm:p-8 space-y-6 shadow-2xl relative"
@@ -256,39 +332,39 @@ export const OnboardingScreen: React.FC = () => {
                 htmlFor="workspaceName"
                 className="block text-xs sm:text-sm font-ui font-medium text-white/90"
               >
-                Workspace name
+                Workspace name <span className="text-white/40">*</span>
               </label>
               <input
                 id="workspaceName"
                 type="text"
                 value={workspaceName}
+                disabled={isSubmitting || isSkipping}
                 onChange={(e) => {
                   setWorkspaceName(e.target.value);
                   if (validationError) setValidationError(null);
                 }}
                 placeholder="Acme Digital"
-                className="w-full h-[52px] rounded-full px-5 bg-white/[0.035] border border-white/[0.10] text-white placeholder:text-white/[0.32] text-sm sm:text-base font-ui focus:border-white/35 focus:outline-none focus:bg-white/[0.05] transition-all"
+                className="w-full h-[52px] rounded-full px-5 bg-white/[0.035] border border-white/[0.10] text-white placeholder:text-white/[0.32] text-sm sm:text-base font-ui focus:border-white/35 focus:outline-none focus:bg-white/[0.05] transition-all disabled:opacity-50"
               />
               <p className="text-[12px] text-white/45 font-ui font-light">
                 Use your agency or business name.
               </p>
             </div>
 
-            {/* FIELD 02: WHAT DO YOU SELL? (Most important field, slightly larger textarea, stronger emphasis) */}
+            {/* FIELD 02: WHAT DO YOU SELL? */}
             <div className="space-y-2 pt-1">
               <div className="flex items-center justify-between">
                 <label
                   htmlFor="whatYouSell"
                   className="block text-xs sm:text-sm font-ui font-medium text-white"
                 >
-                  What do you sell?
+                  What do you sell? <span className="text-white/40">*</span>
                 </label>
-
                 {/* Contextual control: Improve with AI */}
                 <button
                   type="button"
                   onClick={handleImproveSell}
-                  disabled={isImprovingSell}
+                  disabled={isImprovingSell || isSubmitting || isSkipping}
                   className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-ui text-white/60 hover:text-white transition-colors px-2.5 py-1 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] disabled:opacity-50"
                   title="LeadForge can refine your description with AI"
                 >
@@ -300,18 +376,27 @@ export const OnboardingScreen: React.FC = () => {
                   <span>Improve with AI</span>
                 </button>
               </div>
-
               <textarea
                 id="whatYouSell"
                 rows={3}
                 value={whatYouSell}
+                disabled={isSubmitting || isSkipping}
                 onChange={(e) => {
                   setWhatYouSell(e.target.value);
                   if (validationError) setValidationError(null);
+                  if (sellAiNotice) setSellAiNotice(null);
                 }}
                 placeholder="Example: AI automation systems for growing B2B companies"
-                className="w-full min-h-[100px] max-h-[140px] rounded-2xl p-4 bg-white/[0.045] border border-white/[0.14] text-white placeholder:text-white/[0.32] text-sm sm:text-base font-ui focus:border-white/45 focus:outline-none focus:bg-white/[0.06] transition-all resize-none shadow-sm"
+                className="w-full min-h-[100px] max-h-[140px] rounded-2xl p-4 bg-white/[0.045] border border-white/[0.14] text-white placeholder:text-white/[0.32] text-sm sm:text-base font-ui focus:border-white/45 focus:outline-none focus:bg-white/[0.06] transition-all resize-none shadow-sm disabled:opacity-50"
               />
+
+              {/* Inline AI notice if unavailable or note */}
+              {sellAiNotice && (
+                <div className="text-[12px] text-amber-300/80 font-ui flex items-center gap-1.5 pt-0.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{sellAiNotice}</span>
+                </div>
+              )}
 
               {/* Inline AI suggestion banner for Field 02 */}
               <AnimatePresence>
@@ -354,7 +439,6 @@ export const OnboardingScreen: React.FC = () => {
                   </motion.div>
                 )}
               </AnimatePresence>
-
               <p className="text-[12px] text-white/45 font-ui font-light">
                 Describe the service or product you want to sell more of.
               </p>
@@ -367,14 +451,13 @@ export const OnboardingScreen: React.FC = () => {
                   htmlFor="whoYouSellTo"
                   className="block text-xs sm:text-sm font-ui font-medium text-white/90"
                 >
-                  Who do you sell to?
+                  Who do you sell to? <span className="text-white/40">*</span>
                 </label>
-
                 {/* Contextual control: Improve with AI */}
                 <button
                   type="button"
                   onClick={handleImproveAudience}
-                  disabled={isImprovingAudience}
+                  disabled={isImprovingAudience || isSubmitting || isSkipping}
                   className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-ui text-white/60 hover:text-white transition-colors px-2.5 py-1 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] disabled:opacity-50"
                   title="LeadForge can refine your target customer definition with AI"
                 >
@@ -386,18 +469,27 @@ export const OnboardingScreen: React.FC = () => {
                   <span>Improve with AI</span>
                 </button>
               </div>
-
               <input
                 id="whoYouSellTo"
                 type="text"
                 value={whoYouSellTo}
+                disabled={isSubmitting || isSkipping}
                 onChange={(e) => {
                   setWhoYouSellTo(e.target.value);
                   if (validationError) setValidationError(null);
+                  if (audienceAiNotice) setAudienceAiNotice(null);
                 }}
                 placeholder="Example: Founder-led SaaS companies with 10–100 employees"
-                className="w-full h-[52px] rounded-full px-5 bg-white/[0.035] border border-white/[0.10] text-white placeholder:text-white/[0.32] text-sm sm:text-base font-ui focus:border-white/35 focus:outline-none focus:bg-white/[0.05] transition-all"
+                className="w-full h-[52px] rounded-full px-5 bg-white/[0.035] border border-white/[0.10] text-white placeholder:text-white/[0.32] text-sm sm:text-base font-ui focus:border-white/35 focus:outline-none focus:bg-white/[0.05] transition-all disabled:opacity-50"
               />
+
+              {/* Inline AI notice if unavailable or note */}
+              {audienceAiNotice && (
+                <div className="text-[12px] text-amber-300/80 font-ui flex items-center gap-1.5 pt-0.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{audienceAiNotice}</span>
+                </div>
+              )}
 
               {/* Inline AI suggestion banner for Field 03 */}
               <AnimatePresence>
@@ -440,7 +532,6 @@ export const OnboardingScreen: React.FC = () => {
                   </motion.div>
                 )}
               </AnimatePresence>
-
               <p className="text-[12px] text-white/45 font-ui font-light">
                 Describe your ideal customer in plain language.
               </p>
@@ -449,9 +540,8 @@ export const OnboardingScreen: React.FC = () => {
             {/* FIELD 04: TARGET GEOGRAPHY */}
             <div className="space-y-2.5 pt-1">
               <label className="block text-xs sm:text-sm font-ui font-medium text-white/90">
-                Where do you want to sell?
+                Where do you want to sell? <span className="text-white/40">*</span>
               </label>
-
               <div className="flex flex-wrap items-center gap-2">
                 {GEOGRAPHY_OPTIONS.map((geo) => {
                   const isSelected = selectedGeos.includes(geo);
@@ -459,12 +549,13 @@ export const OnboardingScreen: React.FC = () => {
                     <button
                       key={geo}
                       type="button"
+                      disabled={isSubmitting || isSkipping}
                       onClick={() => toggleGeography(geo)}
                       className={`px-4 py-2 rounded-full text-xs sm:text-sm font-ui transition-all ${
                         isSelected
                           ? 'bg-white text-black font-medium border border-white shadow-sm'
                           : 'glass-pill text-white/60 hover:text-white hover:bg-white/[0.08]'
-                      }`}
+                      } disabled:opacity-50`}
                     >
                       {geo}
                     </button>
@@ -479,107 +570,68 @@ export const OnboardingScreen: React.FC = () => {
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: 'auto' }}
                     exit={{ opacity: 0, height: 0 }}
-                    className="overflow-hidden pt-1"
+                    className="overflow-hidden pt-2"
                   >
                     <input
                       type="text"
                       value={customGeo}
-                      onChange={(e) => setCustomGeo(e.target.value)}
-                      placeholder="Example: Mumbai, Pune, Bengaluru"
-                      className="w-full h-[48px] rounded-full px-5 bg-white/[0.03] border border-white/[0.10] text-white placeholder:text-white/[0.30] text-sm font-ui focus:border-white/30 focus:outline-none transition-all"
+                      disabled={isSubmitting || isSkipping}
+                      onChange={(e) => {
+                        setCustomGeo(e.target.value);
+                        if (validationError) setValidationError(null);
+                      }}
+                      placeholder="e.g. Australia & Southeast Asia"
+                      className="w-full h-[46px] rounded-full px-5 bg-white/[0.035] border border-white/[0.10] text-white placeholder:text-white/[0.32] text-xs sm:text-sm font-ui focus:border-white/35 focus:outline-none transition-all disabled:opacity-50"
                     />
                   </motion.div>
                 )}
               </AnimatePresence>
-            </div>
-
-            {/* FIELD 05: COMPANY WEBSITE (OPTIONAL) */}
-            <div className="space-y-2 pt-1">
-              <div className="flex items-center justify-between">
-                <label
-                  htmlFor="website"
-                  className="block text-xs sm:text-sm font-ui font-medium text-white/80"
-                >
-                  Company website
-                </label>
-                <span className="text-[11px] font-ui text-white/40 uppercase tracking-wider">
-                  Optional
-                </span>
-              </div>
-              <input
-                id="website"
-                type="url"
-                value={website}
-                onChange={(e) => setWebsite(e.target.value)}
-                placeholder="https://yourcompany.com"
-                className="w-full h-[48px] rounded-full px-5 bg-white/[0.025] border border-white/[0.08] text-white placeholder:text-white/[0.28] text-sm font-ui focus:border-white/30 focus:outline-none transition-all"
-              />
               <p className="text-[12px] text-white/45 font-ui font-light">
-                LeadForge can use your website to better understand your offer.
+                Select one or more target regions for outbound prospect identification.
               </p>
             </div>
 
-            {/* RESTRAINED INLINE VALIDATION BANNER */}
+            {/* FIELD 05: OPTIONAL WEBSITE */}
+            <div className="space-y-2 pt-1">
+              <label
+                htmlFor="website"
+                className="block text-xs sm:text-sm font-ui font-medium text-white/90"
+              >
+                Website <span className="text-white/40 text-[11px] font-normal">(Optional)</span>
+              </label>
+              <input
+                id="website"
+                type="text"
+                value={website}
+                disabled={isSubmitting || isSkipping}
+                onChange={(e) => {
+                  setWebsite(e.target.value);
+                  if (validationError) setValidationError(null);
+                }}
+                placeholder="https://youragency.com"
+                className="w-full h-[52px] rounded-full px-5 bg-white/[0.035] border border-white/[0.10] text-white placeholder:text-white/[0.32] text-sm sm:text-base font-ui focus:border-white/35 focus:outline-none focus:bg-white/[0.05] transition-all disabled:opacity-50"
+              />
+              <p className="text-[12px] text-white/45 font-ui font-light">
+                LeadForge can crawl your case studies and testimonials to find deeper proof points.
+              </p>
+            </div>
+
+            {/* VALIDATION ERROR BANNER */}
             <AnimatePresence>
               {validationError && (
                 <motion.div
                   initial={{ opacity: 0, y: -4 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -4 }}
-                  className="p-3 rounded-xl bg-white/[0.05] border border-white/20 text-xs font-ui text-white flex items-center gap-2"
+                  className="p-3.5 rounded-xl bg-red-950/40 border border-red-500/30 text-red-200 text-xs sm:text-sm font-ui flex items-start gap-2.5"
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
                   <span>{validationError}</span>
                 </motion.div>
               )}
             </AnimatePresence>
 
-            {/* AI INTERPRETATION PREVIEW BLOCK */}
-            <div className="pt-2">
-              <div className="rounded-2xl glass-panel p-5 border border-white/[0.08] space-y-3.5 bg-white/[0.015]">
-                <div className="flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-white/70" />
-                  <span className="font-ui font-medium text-[10.5px] uppercase tracking-[0.2em] text-white/45">
-                    LeadForge Understands
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs font-ui">
-                  <div className="space-y-1">
-                    <span className="text-[10.5px] uppercase tracking-wider text-white/40 block">
-                      You sell
-                    </span>
-                    <p className="text-white/90 font-medium leading-snug">
-                      {whatYouSell.trim() || 'AI automation systems'}
-                    </p>
-                  </div>
-
-                  <div className="space-y-1">
-                    <span className="text-[10.5px] uppercase tracking-wider text-white/40 block">
-                      For
-                    </span>
-                    <p className="text-white/90 font-medium leading-snug">
-                      {whoYouSellTo.trim() || 'Founder-led B2B companies'}
-                    </p>
-                  </div>
-
-                  <div className="space-y-1">
-                    <span className="text-[10.5px] uppercase tracking-wider text-white/40 block">
-                      Targeting
-                    </span>
-                    <p className="text-white/90 font-medium leading-snug">
-                      {geographyDisplay || 'India + United States'}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-1 border-t border-white/[0.06] text-[11.5px] text-white/45 font-ui font-light">
-                  LeadForge will use this as the starting point for your ICP.
-                </div>
-              </div>
-            </div>
-
-            {/* ACTION FOOTER: PRIMARY CTA + SECONDARY LINK + STAGE PROGRESSION */}
+            {/* ACTION FOOTER */}
             <div className="pt-3 flex flex-col items-center sm:items-end gap-3.5">
               {/* Sequential Loading Stage Indicator */}
               <AnimatePresence>
@@ -591,9 +643,7 @@ export const OnboardingScreen: React.FC = () => {
                     className="w-full flex items-center justify-center sm:justify-end gap-2 text-xs font-ui text-white/70"
                   >
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
-                    <span className="transition-all duration-300">
-                      {loadingStages[currentLoadingStage]}…
-                    </span>
+                    <span>{statusMessage || 'Saving configuration…'}</span>
                   </motion.div>
                 )}
                 {isSuccess && (
@@ -612,13 +662,13 @@ export const OnboardingScreen: React.FC = () => {
               {/* Primary Button */}
               <button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={isSubmitting || isSkipping}
                 className="w-full sm:w-auto h-[50px] sm:h-[52px] px-8 rounded-full bg-white text-black font-ui font-medium text-sm sm:text-[15px] hover:bg-[#eaeaea] active:scale-[0.98] transition-all flex items-center justify-center gap-2 shadow-lg shadow-white/10 disabled:opacity-60"
               >
                 {isSubmitting ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin text-black" />
-                    <span>Building your ICP…</span>
+                    <span>Configuring ICP…</span>
                   </>
                 ) : (
                   <>
@@ -631,11 +681,11 @@ export const OnboardingScreen: React.FC = () => {
               {/* Secondary Action: "I'll set this up later" */}
               <button
                 type="button"
-                onClick={skipOnboarding}
-                disabled={isSubmitting}
+                onClick={handleSkip}
+                disabled={isSubmitting || isSkipping}
                 className="text-xs sm:text-sm text-white/40 hover:text-white/75 font-ui transition-colors text-center disabled:opacity-40"
               >
-                I&apos;ll set this up later
+                {isSkipping ? 'Skipping setup…' : "I'll set this up later"}
               </button>
             </div>
           </motion.form>

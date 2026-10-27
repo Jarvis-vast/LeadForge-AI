@@ -57,6 +57,9 @@ export function initDatabase() {
       description TEXT,
       currency TEXT DEFAULT 'USD',
       timezone TEXT DEFAULT 'America/New_York',
+      onboarding_completed INTEGER DEFAULT 0,
+      onboarding_skipped INTEGER DEFAULT 0,
+      onboarding_data TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
@@ -382,6 +385,11 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_activities_workspace ON activities(workspace_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_notifications_workspace ON notifications(workspace_id, read);
   `);
+
+  // Safe migrations for onboarding persistence
+  try { db.exec("ALTER TABLE workspaces ADD COLUMN onboarding_completed INTEGER DEFAULT 0;"); } catch {}
+  try { db.exec("ALTER TABLE workspaces ADD COLUMN onboarding_skipped INTEGER DEFAULT 0;"); } catch {}
+  try { db.exec("ALTER TABLE workspaces ADD COLUMN onboarding_data TEXT;"); } catch {}
 }
 
 // Automatically initialize schema on module import
