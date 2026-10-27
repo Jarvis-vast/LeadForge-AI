@@ -46,10 +46,21 @@ function verifyPassword(password: string, combinedHash: string): boolean {
   }
 }
 
+export const MIN_PASSWORD_LENGTH = 8;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export class AuthService {
   static register(email: string, password?: string, name?: string): AuthSession {
+    if (!email || typeof email !== 'string' || !EMAIL_REGEX.test(email.trim())) {
+      throw new Error('A valid email address is required.');
+    }
+
+    if (!password || typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
+      throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters long.`);
+    }
+
     const normalizedEmail = email.trim().toLowerCase();
-    const existing = db.prepare('SELECT * FROM profiles WHERE email = ?').get(normalizedEmail) as any;
+    const existing = db.prepare('SELECT id FROM profiles WHERE email = ?').get(normalizedEmail) as any;
     if (existing) {
       throw new Error('An account with this email already exists.');
     }
@@ -59,64 +70,77 @@ export class AuthService {
     const workspaceId = crypto.randomUUID();
     const now = new Date().toISOString();
     const userName = name?.trim() || normalizedEmail.split('@')[0] || 'Founder';
-    const pwdHash = password ? hashPassword(password) : null;
-
-    // 1. Create Profile
-    db.prepare(`
-      INSERT INTO profiles (id, email, name, password_hash, role, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'founder', ?, ?)
-    `).run(userId, normalizedEmail, userName, pwdHash, now, now);
-
-    // 2. Create Organization
-    const orgSlug = `${userName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now().toString(36)}`;
-    db.prepare(`
-      INSERT INTO organizations (id, name, slug, plan, created_at, updated_at)
-      VALUES (?, ?, ?, 'growth', ?, ?)
-    `).run(orgId, `${userName}'s Organization`, orgSlug, now, now);
-
-    // 3. Create Default Workspace
-    db.prepare(`
-      INSERT INTO workspaces (id, org_id, name, website, currency, timezone, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'USD', 'America/New_York', ?, ?)
-    `).run(workspaceId, orgId, `${userName}'s Workspace`, 'https://agency.com', now, now);
-
-    // 4. Create Workspace Member (Owner)
-    db.prepare(`
-      INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at)
-      VALUES (?, ?, ?, 'owner', ?)
-    `).run(crypto.randomUUID(), workspaceId, userId, now);
-
-    // 5. Create default initial ICP for this workspace (so they have standard B2B criteria)
-    db.prepare(`
-      INSERT INTO icp_profiles (
-        id, workspace_id, name, summary, target_industries, company_sizes, geographies,
-        buyer_roles, buying_signals, exclusions, inferred_assumptions, is_confirmed, confidence,
-        created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0.92, ?, ?)
-    `).run(
-      crypto.randomUUID(),
-      workspaceId,
-      'Target ICP — High-Growth B2B Companies',
-      'Fast-growing tech companies scaling sales, engineering, and digital workflows.',
-      JSON.stringify(['B2B SaaS', 'E-commerce Tech', 'HealthTech', 'FinTech']),
-      JSON.stringify(['20-150 employees', '$3M-$20M ARR']),
-      JSON.stringify(['United States', 'Canada', 'United Kingdom']),
-      JSON.stringify(['Founder / CEO', 'VP Marketing', 'Head of Growth', 'CTO']),
-      JSON.stringify(['Hiring leadership', 'Recent product release', 'Modernizing tech stack']),
-      JSON.stringify(['Pre-revenue startups', 'Enterprises > 2,000 employees']),
-      JSON.stringify(['Assumes modern web stack', 'Inferred 3-8 week sales cycle']),
-      now,
-      now
-    );
-
-    // 6. Create Session Token
+    const pwdHash = hashPassword(password);
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); // 30 days
-    db.prepare(`
-      INSERT INTO sessions (token, user_id, expires_at, created_at)
-      VALUES (?, ?, ?, ?)
-    `).run(token, userId, expiresAt, now);
+
+    // Atomic registration transaction: ensures no partial records on failure
+    db.exec('BEGIN TRANSACTION;');
+    try {
+      // 1. Create Profile
+      db.prepare(`
+        INSERT INTO profiles (id, email, name, password_hash, role, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'founder', ?, ?)
+      `).run(userId, normalizedEmail, userName, pwdHash, now, now);
+
+      // 2. Create Organization
+      const orgSlug = `${userName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now().toString(36)}`;
+      db.prepare(`
+        INSERT INTO organizations (id, name, slug, plan, created_at, updated_at)
+        VALUES (?, ?, ?, 'growth', ?, ?)
+      `).run(orgId, `${userName}'s Organization`, orgSlug, now, now);
+
+      // 3. Create Default Workspace
+      db.prepare(`
+        INSERT INTO workspaces (id, org_id, name, website, currency, timezone, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'USD', 'America/New_York', ?, ?)
+      `).run(workspaceId, orgId, `${userName}'s Workspace`, 'https://agency.com', now, now);
+
+      // 4. Create Workspace Member (Owner)
+      db.prepare(`
+        INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at)
+        VALUES (?, ?, ?, 'owner', ?)
+      `).run(crypto.randomUUID(), workspaceId, userId, now);
+
+      // 5. Create default initial ICP for this workspace (so they have standard B2B criteria)
+      db.prepare(`
+        INSERT INTO icp_profiles (
+          id, workspace_id, name, summary, target_industries, company_sizes, geographies,
+          buyer_roles, buying_signals, exclusions, inferred_assumptions, is_confirmed, confidence,
+          created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0.92, ?, ?)
+      `).run(
+        crypto.randomUUID(),
+        workspaceId,
+        'Target ICP — High-Growth B2B Companies',
+        'Fast-growing tech companies scaling sales, engineering, and digital workflows.',
+        JSON.stringify(['B2B SaaS', 'E-commerce Tech', 'HealthTech', 'FinTech']),
+        JSON.stringify(['20-150 employees', '$3M-$20M ARR']),
+        JSON.stringify(['United States', 'Canada', 'United Kingdom']),
+        JSON.stringify(['Founder / CEO', 'VP Marketing', 'Head of Growth', 'CTO']),
+        JSON.stringify(['Hiring leadership', 'Recent product release', 'Modernizing tech stack']),
+        JSON.stringify(['Pre-revenue startups', 'Enterprises > 2,000 employees']),
+        JSON.stringify(['Assumes modern web stack', 'Inferred 3-8 week sales cycle']),
+        now,
+        now
+      );
+
+      // 6. Create Session Token
+      db.prepare(`
+        INSERT INTO sessions (token, user_id, expires_at, created_at)
+        VALUES (?, ?, ?, ?)
+      `).run(token, userId, expiresAt, now);
+
+      db.exec('COMMIT;');
+    } catch (txErr) {
+      try {
+        db.exec('ROLLBACK;');
+      } catch {
+        // ignore rollback errors
+      }
+      throw txErr;
+    }
 
     const user: UserProfile = {
       id: userId,

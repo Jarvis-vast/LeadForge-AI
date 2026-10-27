@@ -90,12 +90,18 @@ app.get('/api/health', (req, res) => {
 app.post('/api/auth/register', (req, res) => {
   try {
     const { email, password, name } = req.body;
-    if (!email || typeof email !== 'string') {
-      return res.status(400).json({ error: 'Valid email address is required.' });
+    if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      return res.status(400).json({ error: 'A valid email address is required.' });
+    }
+    if (!password || typeof password !== 'string' || password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
     }
     const session = AuthService.register(email, password, name);
     res.status(201).json(session);
   } catch (err: any) {
+    if (err.message && err.message.includes('already exists')) {
+      return res.status(409).json({ error: 'An account with this email already exists.' });
+    }
     res.status(400).json({ error: err.message || 'Registration failed.' });
   }
 });
@@ -107,12 +113,12 @@ app.post('/api/auth/login', (req, res) => {
       return res.status(400).json({ error: 'Valid email address is required.' });
     }
     if (!password || typeof password !== 'string' || !password.trim()) {
-      return res.status(401).json({ error: 'Password is required.' });
+      return res.status(400).json({ error: 'Password is required.' });
     }
     const session = AuthService.login(email, password);
     res.json(session);
   } catch (err: any) {
-    res.status(401).json({ error: err.message || 'Login failed.' });
+    res.status(401).json({ error: err.message || 'Invalid email or password.' });
   }
 });
 

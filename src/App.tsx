@@ -58,6 +58,7 @@ const MainContent: React.FC = () => {
 const AppShell: React.FC = () => {
   const {
     isAuthenticated,
+    isLoadingSession,
     isOnboardingCompleted,
     isICPConfirmed,
     enterFocusMode,
@@ -83,6 +84,23 @@ const AppShell: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [enterFocusMode, isFocusModeOpen]);
+
+  // Loading state while validating session against backend
+  if (isLoadingSession) {
+    return (
+      <div className="min-h-screen w-full bg-black flex items-center justify-center text-white font-ui select-none">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-11 h-11 rounded-full glass-strong border border-white/[0.18] flex items-center justify-center shadow-lg luminous-edge">
+            <span className="font-ui font-semibold text-sm tracking-wider text-white">LF</span>
+          </div>
+          <div className="flex items-center gap-2 text-white/50 text-xs">
+            <span className="w-1.5 h-1.5 rounded-full bg-white/70 animate-pulse" />
+            <span>Validating session…</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Screen 01: If not authenticated, display LeadForge Welcome / Sign In
   if (!isAuthenticated) {

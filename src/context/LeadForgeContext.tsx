@@ -108,7 +108,8 @@ interface LeadForgeContextType {
   setIsAuthenticated: (auth: boolean) => void;
   currentUser: { email: string; name: string } | null;
   loginWithGoogle: () => Promise<void>;
-  loginWithEmail: (email: string) => Promise<boolean>;
+  loginWithEmail: (email: string, password: string) => Promise<boolean>;
+  registerWithEmail: (email: string, password: string, name?: string) => Promise<boolean>;
   logout: () => void;
 
   // Onboarding (Screen 02 Workspace Onboarding)
@@ -393,17 +394,11 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [notificationsDrawerOpen, setNotificationsDrawerOpen] = useState(false);
 
   // Authentication (Screen 01 Welcome Screen)
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    const saved = localStorage.getItem('leadforge_auth');
-    return saved === 'true' || Boolean(getStoredToken());
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [currentUser, setCurrentUser] = useState<{ email: string; name: string } | null>(null);
+  const [isLoadingSession, setIsLoadingSession] = useState<boolean>(() => {
+    return Boolean(getStoredToken());
   });
-
-  const [currentUser, setCurrentUser] = useState<{ email: string; name: string } | null>(() => {
-    const saved = localStorage.getItem('leadforge_user');
-    return saved ? JSON.parse(saved) : null;
-  });
-
-  const [isLoadingSession, setIsLoadingSession] = useState<boolean>(true);
 
   const refreshWorkspaceData = async () => {
     try {
@@ -439,15 +434,19 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
-  // Restore authenticated session on mount
+  // Restore authenticated session on mount: validate against /api/auth/me
+  // A localStorage flag alone never overrides absent or invalid session
   useEffect(() => {
     const token = getStoredToken();
     if (token) {
+      setIsLoadingSession(true);
       api.auth.getMe()
         .then((res) => {
-          if (res.user) {
+          if (res && res.user && res.workspace) {
             setCurrentUser(res.user);
             setIsAuthenticated(true);
+            localStorage.setItem('leadforge_auth', 'true');
+            localStorage.setItem('leadforge_user', JSON.stringify(res.user));
             if (res.workspace) {
               setWorkspace((prev) => ({
                 ...prev,
@@ -456,10 +455,14 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               }));
             }
             refreshWorkspaceData();
+          } else {
+            throw new Error('Invalid session response from server');
           }
         })
         .catch(() => {
           clearStoredToken();
+          localStorage.removeItem('leadforge_auth');
+          localStorage.removeItem('leadforge_user');
           setIsAuthenticated(false);
           setCurrentUser(null);
         })
@@ -467,55 +470,59 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           setIsLoadingSession(false);
         });
     } else {
+      clearStoredToken();
+      localStorage.removeItem('leadforge_auth');
+      localStorage.removeItem('leadforge_user');
+      setIsAuthenticated(false);
+      setCurrentUser(null);
       setIsLoadingSession(false);
     }
   }, []);
 
-  const loginWithGoogle = async () => {
-    try {
-      const email = 'alex.founder@forgelabs.agency';
-      let session;
-      try {
-        session = await api.auth.login(email);
-      } catch {
-        session = await api.auth.register(email, undefined, 'Alex Vance');
-      }
-      setStoredToken(session.token);
-      setCurrentUser(session.user);
-      setIsAuthenticated(true);
-      localStorage.setItem('leadforge_auth', 'true');
-      localStorage.setItem('leadforge_user', JSON.stringify(session.user));
-      await refreshWorkspaceData();
-    } catch (err) {
-      console.error('Google login error:', err);
-      const user = { email: 'alex.founder@forgelabs.agency', name: 'Alex Vance' };
-      setCurrentUser(user);
-      setIsAuthenticated(true);
-    }
+  const loginWithGoogle = async (): Promise<void> => {
+    throw new Error('Google sign-in is not configured in this build. Please sign in with your work email and password.');
   };
 
-  const loginWithEmail = async (email: string, password?: string): Promise<boolean> => {
-    try {
-      let session;
-      try {
-        session = await api.auth.login(email, password);
-      } catch {
-        session = await api.auth.register(email, password);
-      }
-      setStoredToken(session.token);
-      setCurrentUser(session.user);
-      setIsAuthenticated(true);
-      localStorage.setItem('leadforge_auth', 'true');
-      localStorage.setItem('leadforge_user', JSON.stringify(session.user));
-      await refreshWorkspaceData();
-      return true;
-    } catch (err) {
-      console.error('Email login error:', err);
-      const user = { email, name: email.split('@')[0] || 'Operator' };
-      setCurrentUser(user);
-      setIsAuthenticated(true);
-      return true;
+  const loginWithEmail = async (email: string, password: string): Promise<boolean> => {
+    const session = await api.auth.login(email, password);
+    if (!session || !session.token || !session.user || !session.workspace) {
+      throw new Error('Invalid session received from server.');
     }
+    setStoredToken(session.token);
+    setCurrentUser(session.user);
+    setIsAuthenticated(true);
+    localStorage.setItem('leadforge_auth', 'true');
+    localStorage.setItem('leadforge_user', JSON.stringify(session.user));
+    if (session.workspace) {
+      setWorkspace((prev) => ({
+        ...prev,
+        name: session.workspace.name || prev.name,
+        website: session.workspace.website || prev.website,
+      }));
+    }
+    await refreshWorkspaceData();
+    return true;
+  };
+
+  const registerWithEmail = async (email: string, password: string, name?: string): Promise<boolean> => {
+    const session = await api.auth.register(email, password, name);
+    if (!session || !session.token || !session.user || !session.workspace) {
+      throw new Error('Invalid session received from server.');
+    }
+    setStoredToken(session.token);
+    setCurrentUser(session.user);
+    setIsAuthenticated(true);
+    localStorage.setItem('leadforge_auth', 'true');
+    localStorage.setItem('leadforge_user', JSON.stringify(session.user));
+    if (session.workspace) {
+      setWorkspace((prev) => ({
+        ...prev,
+        name: session.workspace.name || prev.name,
+        website: session.workspace.website || prev.website,
+      }));
+    }
+    await refreshWorkspaceData();
+    return true;
   };
 
   const logout = async () => {
@@ -1737,6 +1744,7 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         currentUser,
         loginWithGoogle,
         loginWithEmail,
+        registerWithEmail,
         logout,
         isOnboardingCompleted,
         setIsOnboardingCompleted,
