@@ -83,9 +83,74 @@ export const api = {
         body: JSON.stringify(data),
       }),
     parse: (prompt: string) =>
-      request<{ criteria: any; source: string }>('/api/icp/parse', {
+      request<{ criteria: any; source: string; aiAvailable?: boolean; isFallback?: boolean }>('/api/icp/parse', {
         method: 'POST',
         body: JSON.stringify({ prompt }),
+      }),
+  },
+
+  // Leads & Discovery (Screen 03)
+  leads: {
+    getProviderStatus: () =>
+      request<{
+        providerConfigured: boolean;
+        providerName: string | null;
+        supportedFilters: string[];
+        workspaceLeadCount: number;
+        message: string;
+      }>('/api/leads/provider-status'),
+    discover: (filters: {
+      industries?: string[];
+      geographies?: string[];
+      companySizes?: string[];
+      jobTitles?: string[];
+      query?: string;
+    }) =>
+      request<{
+        providerConfigured: boolean;
+        providerName: string | null;
+        source: string;
+        providerMessage: string;
+        criteria: any;
+        totalMatches: number;
+        results: Array<{
+          id: string;
+          name: string;
+          domain: string;
+          industry: string;
+          size: string;
+          location: string;
+          description: string;
+          techStack: string[];
+          source: string;
+          contact: {
+            name: string;
+            title: string;
+            email: string;
+          } | null;
+        }>;
+      }>('/api/leads/discover', {
+        method: 'POST',
+        body: JSON.stringify(filters),
+      }),
+    save: (data: {
+      name: string;
+      domain?: string;
+      industry?: string;
+      size?: string;
+      location?: string;
+      description?: string;
+      contactName?: string;
+      contactRole?: string;
+      email?: string;
+    }) =>
+      request<{
+        success: boolean;
+        accountId: string;
+        opportunityId: string;
+      }>('/api/leads/save', {
+        method: 'POST',
+        body: JSON.stringify(data),
       }),
   },
 

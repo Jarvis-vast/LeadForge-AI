@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { NetworkConstellation } from './NetworkConstellation';
 import { useLeadForge } from '../context/LeadForgeContext';
 import { StructuredICP } from '../types';
+import { api } from '../lib/api';
 import {
   Check,
   Edit2,
@@ -14,6 +15,14 @@ import {
   ChevronUp,
   AlertTriangle,
   X,
+  Search,
+  Building2,
+  MapPin,
+  Users,
+  Briefcase,
+  ExternalLink,
+  ShieldAlert,
+  Database,
   Plus,
 } from 'lucide-react';
 
@@ -48,6 +57,23 @@ const AVAILABLE_DECISION_MAKERS = [
   'COO',
 ];
 
+interface DiscoveredLead {
+  id: string;
+  name: string;
+  domain: string;
+  industry: string;
+  size: string;
+  location: string;
+  description: string;
+  techStack: string[];
+  source: string;
+  contact: {
+    name: string;
+    title: string;
+    email: string;
+  } | null;
+}
+
 export const ICPConfirmationScreen: React.FC = () => {
   const {
     structuredICP,
@@ -62,10 +88,17 @@ export const ICPConfirmationScreen: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [hasUserEdited, setHasUserEdited] = useState(false);
 
+  // Sync with context if structuredICP changes externally
+  useEffect(() => {
+    if (!hasUserEdited) {
+      setLocalICP(structuredICP);
+    }
+  }, [structuredICP, hasUserEdited]);
+
   // Expanded industry view (+3 more toggle)
   const [showAllIndustries, setShowAllIndustries] = useState(false);
 
-  // New tag input state in edit mode
+  // Tag inputs in edit mode
   const [newIndustryInput, setNewIndustryInput] = useState('');
   const [newGeoInput, setNewGeoInput] = useState('');
   const [newRoleInput, setNewRoleInput] = useState('');
@@ -79,19 +112,41 @@ export const ICPConfirmationScreen: React.FC = () => {
 
   // Loading & staged regeneration state
   const [isRegenerating, setIsRegenerating] = useState(false);
-  const [regenStage, setRegenStage] = useState(0);
   const [regenError, setRegenError] = useState<string | null>(null);
 
-  const regenStages = [
-    'Reading your offer',
-    'Identifying customer patterns',
-    'Selecting useful buying signals',
-    'Building your ICP',
-  ];
-
-  // Approval animation & progression state
+  // Approval state
   const [isApproving, setIsApproving] = useState(false);
-  const [approvalStage, setApprovalStage] = useState<'IDLE' | 'APPROVED' | 'DISCOVERING'>('IDLE');
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+
+  // Lead Discovery State
+  const [providerStatus, setProviderStatus] = useState<{
+    providerConfigured: boolean;
+    providerName: string | null;
+    workspaceLeadCount: number;
+    message: string;
+  } | null>(null);
+  const [isSearchingLeads, setIsSearchingLeads] = useState(false);
+  const [discoveredLeads, setDiscoveredLeads] = useState<DiscoveredLead[] | null>(null);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [savingLeadId, setSavingLeadId] = useState<string | null>(null);
+  const [savedLeadIds, setSavedLeadIds] = useState<string[]>([]);
+  const [filterValidationError, setFilterValidationError] = useState<string | null>(null);
+
+  // Fetch real lead provider integration status on mount
+  useEffect(() => {
+    let isMounted = true;
+    api.leads.getProviderStatus()
+      .then((status) => {
+        if (isMounted) setProviderStatus(status);
+      })
+      .catch((err) => {
+        console.warn('Could not fetch lead provider status:', err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Motion variants
   const entranceVariant = {
@@ -104,7 +159,7 @@ export const ICPConfirmationScreen: React.FC = () => {
     },
   };
 
-  // Industries to show (max 4 before "+X more" if collapsed)
+  // Industries to show
   const displayedIndustries = useMemo(() => {
     if (showAllIndustries || isEditing) {
       return localICP.industries;
@@ -248,7 +303,7 @@ export const ICPConfirmationScreen: React.FC = () => {
     setLocalICP(structuredICP);
   };
 
-  // Trigger Regenerate with AI
+  // Real AI Regeneration
   const handleTriggerRegenerate = () => {
     if (hasUserEdited) {
       setShowRegenWarningModal(true);
@@ -261,42 +316,90 @@ export const ICPConfirmationScreen: React.FC = () => {
     setShowRegenWarningModal(false);
     setIsRegenerating(true);
     setRegenError(null);
-    setRegenStage(0);
-
-    const stepTimer1 = setTimeout(() => setRegenStage(1), 350);
-    const stepTimer2 = setTimeout(() => setRegenStage(2), 750);
-    const stepTimer3 = setTimeout(() => setRegenStage(3), 1150);
 
     try {
       const regenerated = await regenerateICP();
       setLocalICP(regenerated);
       setHasUserEdited(false);
       setIsEditing(false);
-    } catch (err) {
-      setRegenError('Check your business description and try again.');
+    } catch (err: any) {
+      setRegenError(err.message || 'Check your business description and try again.');
     } finally {
-      clearTimeout(stepTimer1);
-      clearTimeout(stepTimer2);
-      clearTimeout(stepTimer3);
       setIsRegenerating(false);
     }
   };
 
-  // Approve ICP handler with staged animation
+  // Real Lead Discovery Search
+  const handleDiscoverLeads = async () => {
+    if (isSearchingLeads || isApproving) return;
+    setFilterValidationError(null);
+    setDiscoveryError(null);
+
+    // Validate inputs
+    if (localICP.industries.length === 0 && localICP.geography.length === 0 && localICP.companySize.length === 0) {
+      setFilterValidationError('Please select at least one industry, geography, or company size filter to search.');
+      return;
+    }
+
+    setIsSearchingLeads(true);
+    setHasSearched(true);
+
+    try {
+      const res = await api.leads.discover({
+        industries: localICP.industries,
+        geographies: localICP.geography,
+        companySizes: localICP.companySize,
+        jobTitles: localICP.decisionMakers,
+        query: localICP.customerType,
+      });
+
+      setDiscoveredLeads(res.results || []);
+    } catch (err: any) {
+      setDiscoveryError(err.message || 'Failed to search leads. Your filters have been preserved.');
+    } finally {
+      setIsSearchingLeads(false);
+    }
+  };
+
+  // Save discovered lead to workspace pipeline
+  const handleSaveLead = async (lead: DiscoveredLead) => {
+    if (savingLeadId || savedLeadIds.includes(lead.id)) return;
+    setSavingLeadId(lead.id);
+
+    try {
+      await api.leads.save({
+        name: lead.name,
+        domain: lead.domain,
+        industry: lead.industry,
+        size: lead.size,
+        location: lead.location,
+        description: lead.description,
+        contactName: lead.contact?.name,
+        contactRole: lead.contact?.title,
+        email: lead.contact?.email,
+      });
+
+      setSavedLeadIds((prev) => [...prev, lead.id]);
+    } catch (err: any) {
+      setDiscoveryError(err.message || `Failed to save ${lead.name} to workspace.`);
+    } finally {
+      setSavingLeadId(null);
+    }
+  };
+
+  // Approve ICP handler with real backend persistence
   const handleApprove = async () => {
+    if (isApproving || isSearchingLeads) return;
     setIsApproving(true);
-    setApprovalStage('APPROVED');
+    setApprovalError(null);
 
-    // Stage 1: ICP approved
-    setTimeout(() => {
-      // Stage 2: Preparing opportunity discovery
-      setApprovalStage('DISCOVERING');
-    }, 900);
-
-    setTimeout(async () => {
-      // Complete approval and navigate to Screen 04
+    try {
+      // Truly persists to SQLite backend; throws on error
       await approveICP(localICP);
-    }, 1800);
+    } catch (err: any) {
+      setApprovalError(err.message || 'Failed to save confirmed ICP profile to server. Please try again.');
+      setIsApproving(false);
+    }
   };
 
   return (
@@ -314,7 +417,7 @@ export const ICPConfirmationScreen: React.FC = () => {
           animate="animate"
           transition={{ delay: 0.05 }}
         >
-          {/* Top-left: LF mark in 44px liquid-glass circle + LeadForge Barlow Medium */}
+          {/* Top-left: LF mark */}
           <div className="flex items-center gap-3.5">
             <div className="w-11 h-11 rounded-full glass-strong border border-white/[0.18] flex items-center justify-center shadow-lg luminous-edge">
               <span className="font-ui font-semibold text-sm tracking-wider text-white">
@@ -326,98 +429,13 @@ export const ICPConfirmationScreen: React.FC = () => {
             </span>
           </div>
 
-          {/* Top-right: Understated progress indicator: Step 2 of 3 */}
-          <div className="flex items-center gap-1.5 text-xs sm:text-sm font-ui font-normal text-white/[0.45] tracking-widest uppercase">
+          {/* Top-right: Step progress indicator */}
+          <div className="flex items-center gap-2 text-xs sm:text-sm font-ui font-normal text-white/[0.45] tracking-widest uppercase">
+            <span>Screen 03</span>
+            <span className="text-white/20">•</span>
             <span>Step 2 of 3</span>
           </div>
         </motion.header>
-
-        {/* STAGED REGENERATION / LOADING OVERLAY */}
-        <AnimatePresence>
-          {isRegenerating && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-6"
-            >
-              <div className="max-w-md w-full rounded-3xl glass-panel p-8 border border-white/15 text-center space-y-6">
-                <div className="w-12 h-12 mx-auto rounded-full bg-white/[0.05] border border-white/20 flex items-center justify-center shadow-inner">
-                  <Sparkles className="w-5 h-5 text-white animate-pulse" />
-                </div>
-
-                <div className="space-y-2">
-                  <h3 className="font-editorial italic text-2xl sm:text-3xl text-white font-normal">
-                    Re-evaluating your market fit
-                  </h3>
-                  <p className="text-xs text-white/50 font-ui">
-                    LeadForge is analyzing recent signals and offer alignment
-                  </p>
-                </div>
-
-                <div className="space-y-2.5 text-left pt-2">
-                  {regenStages.map((stageName, idx) => {
-                    const isDone = regenStage > idx;
-                    const isCurrent = regenStage === idx;
-                    return (
-                      <div
-                        key={stageName}
-                        className={`flex items-center gap-3 text-xs font-ui transition-all duration-300 ${
-                          isCurrent
-                            ? 'text-white font-medium pl-1'
-                            : isDone
-                            ? 'text-white/60'
-                            : 'text-white/25'
-                        }`}
-                      >
-                        <div className="w-4 h-4 flex items-center justify-center">
-                          {isDone ? (
-                            <Check className="w-3.5 h-3.5 text-white" />
-                          ) : isCurrent ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
-                          ) : (
-                            <span className="w-1.5 h-1.5 rounded-full bg-white/20" />
-                          )}
-                        </div>
-                        <span>{stageName}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ERROR STATE MODAL / BANNER */}
-        <AnimatePresence>
-          {regenError && (
-            <motion.div
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="my-4 p-4 rounded-2xl glass-panel border border-white/20 flex items-center justify-between gap-4 max-w-2xl mx-auto w-full"
-            >
-              <div className="flex items-center gap-3">
-                <AlertTriangle className="w-5 h-5 text-white/70 shrink-0" />
-                <div>
-                  <h4 className="text-xs font-medium text-white">
-                    We couldn&apos;t build your ICP yet.
-                  </h4>
-                  <p className="text-[11px] text-white/50 font-light">
-                    {regenError}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={executeRegeneration}
-                className="px-3.5 py-1.5 rounded-full bg-white text-black text-xs font-ui font-medium hover:bg-white/90 transition-all shrink-0"
-              >
-                Try again
-              </button>
-            </motion.div>
-          )}
-        </AnimatePresence>
 
         {/* REGENERATE CONFIRMATION WARNING MODAL */}
         <AnimatePresence>
@@ -457,10 +475,44 @@ export const ICPConfirmationScreen: React.FC = () => {
           )}
         </AnimatePresence>
 
+        {/* ERROR STATE BANNER */}
+        <AnimatePresence>
+          {(regenError || approvalError || filterValidationError) && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="my-4 p-4 rounded-2xl glass-panel border border-red-500/30 bg-red-950/30 flex items-center justify-between gap-4 max-w-3xl mx-auto w-full"
+            >
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="w-5 h-5 text-red-400 shrink-0" />
+                <div>
+                  <h4 className="text-xs font-medium text-red-200">
+                    {filterValidationError ? 'Filter validation error' : 'Action failed'}
+                  </h4>
+                  <p className="text-[11px] text-red-300/80 font-light">
+                    {filterValidationError || regenError || approvalError}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setRegenError(null);
+                  setApprovalError(null);
+                  setFilterValidationError(null);
+                }}
+                className="px-3 py-1 rounded-full bg-white/10 text-white text-xs font-ui hover:bg-white/20 transition-all shrink-0"
+              >
+                Dismiss
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* MAIN COMPOSITION */}
         <div className="w-full my-auto py-6 sm:py-8">
           {/* PAGE HEADER */}
-          <div className="w-full max-w-[650px] mb-8 sm:mb-10 text-left">
+          <div className="w-full max-w-[760px] mb-8 text-left">
             {/* Kicker */}
             <motion.div
               variants={entranceVariant}
@@ -470,7 +522,7 @@ export const ICPConfirmationScreen: React.FC = () => {
               className="mb-2"
             >
               <span className="font-ui font-medium text-[11px] uppercase tracking-[0.24em] text-white/[0.48]">
-                Your ideal customer
+                Screen 03 — Lead Discovery &amp; ICP Calibration
               </span>
             </motion.div>
 
@@ -480,9 +532,9 @@ export const ICPConfirmationScreen: React.FC = () => {
               initial="initial"
               animate="animate"
               transition={{ delay: 0.16 }}
-              className="font-editorial italic text-white text-[46px] sm:text-[56px] lg:text-[64px] leading-[0.92] tracking-[-0.02em] font-normal mb-3.5"
+              className="font-editorial italic text-white text-[44px] sm:text-[54px] lg:text-[62px] leading-[0.92] tracking-[-0.02em] font-normal mb-3.5"
             >
-              We found your starting ICP.
+              Define target leads &amp; discover opportunities.
             </motion.h1>
 
             {/* Supporting copy */}
@@ -493,13 +545,13 @@ export const ICPConfirmationScreen: React.FC = () => {
               transition={{ delay: 0.22 }}
               className="text-[15px] sm:text-[16px] text-white/[0.68] font-light leading-[1.54] font-ui"
             >
-              LeadForge translated your description into the signals most useful for finding high-value opportunities. Review the profile before we start researching companies.
+              Refine your target criteria below. LeadForge will query available lead data and calibrate high-intent prospect accounts before you begin active outreach.
             </motion.p>
           </div>
 
-          {/* TWO-COLUMN LAYOUT: Desktop 60-65% Left, 35-40% Right. Mobile stacked. */}
+          {/* TWO-COLUMN LAYOUT */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-start">
-            {/* LEFT COLUMN: STRUCTURED ICP PROFILE (~62% width: 7-8 cols on 12-col grid) */}
+            {/* LEFT COLUMN: TARGET FILTERS & STRUCTURED ICP (~62% width) */}
             <motion.div
               variants={entranceVariant}
               initial="initial"
@@ -511,11 +563,11 @@ export const ICPConfirmationScreen: React.FC = () => {
               <div className="flex items-center justify-between border-b border-white/[0.06] pb-4">
                 <div className="flex items-center gap-2">
                   <span className="font-ui font-medium text-xs uppercase tracking-[0.2em] text-white/50">
-                    Ideal Customer Profile
+                    Lead Targeting Criteria
                   </span>
                   {hasUserEdited && !isEditing && (
                     <span className="text-[10px] font-ui px-2 py-0.5 rounded-full bg-white/[0.06] text-white/60 border border-white/[0.08]">
-                      Edited
+                      Customized
                     </span>
                   )}
                 </div>
@@ -528,7 +580,7 @@ export const ICPConfirmationScreen: React.FC = () => {
                     className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full glass-pill hover:bg-white/[0.08] text-xs font-ui text-white/70 hover:text-white transition-all"
                   >
                     <Edit2 className="w-3 h-3" />
-                    <span>Edit</span>
+                    <span>Edit filters</span>
                   </button>
                 ) : (
                   <div className="flex items-center gap-2">
@@ -545,7 +597,7 @@ export const ICPConfirmationScreen: React.FC = () => {
                       className="px-3 py-1 rounded-full bg-white text-black text-xs font-ui font-medium hover:bg-white/90 transition-all flex items-center gap-1"
                     >
                       <Check className="w-3 h-3" />
-                      <span>Update ICP</span>
+                      <span>Apply</span>
                     </button>
                   </div>
                 )}
@@ -554,7 +606,7 @@ export const ICPConfirmationScreen: React.FC = () => {
               {/* FIELD 01: CUSTOMER TYPE */}
               <div className="space-y-1.5">
                 <label className="block text-[11px] font-ui uppercase tracking-wider text-white/45">
-                  Customer type
+                  Target customer type
                 </label>
                 {!isEditing ? (
                   <p className="font-ui font-medium text-base sm:text-lg text-white tracking-tight">
@@ -577,7 +629,7 @@ export const ICPConfirmationScreen: React.FC = () => {
               {/* FIELD 02: COMPANY SIZE */}
               <div className="space-y-2">
                 <label className="block text-[11px] font-ui uppercase tracking-wider text-white/45">
-                  Company size
+                  Target company size
                 </label>
                 <div className="flex flex-wrap items-center gap-2">
                   {isEditing
@@ -613,7 +665,7 @@ export const ICPConfirmationScreen: React.FC = () => {
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="block text-[11px] font-ui uppercase tracking-wider text-white/45">
-                    Industries
+                    Target industries
                   </label>
                   {!isEditing && hiddenIndustriesCount > 0 && (
                     <button
@@ -654,7 +706,7 @@ export const ICPConfirmationScreen: React.FC = () => {
                   ))}
                 </div>
 
-                {/* In edit mode, show preset suggestions + custom addition */}
+                {/* Edit mode: preset suggestions + custom add */}
                 {isEditing && (
                   <div className="pt-2 space-y-2 border-t border-white/[0.06]">
                     <span className="text-[10.5px] font-ui text-white/40 uppercase tracking-wider block">
@@ -675,7 +727,6 @@ export const ICPConfirmationScreen: React.FC = () => {
                       ))}
                     </div>
 
-                    {/* Custom input */}
                     <div className="flex items-center gap-2 pt-1">
                       <input
                         type="text"
@@ -726,7 +777,6 @@ export const ICPConfirmationScreen: React.FC = () => {
                   ))}
                 </div>
 
-                {/* In edit mode, add custom geo */}
                 {isEditing && (
                   <div className="flex items-center gap-2 pt-1">
                     <input
@@ -756,7 +806,7 @@ export const ICPConfirmationScreen: React.FC = () => {
               {/* FIELD 05: DECISION MAKERS */}
               <div className="space-y-2">
                 <label className="block text-[11px] font-ui uppercase tracking-wider text-white/45">
-                  Decision makers
+                  Target decision makers &amp; roles
                 </label>
                 <div className="flex flex-wrap items-center gap-2">
                   {isEditing
@@ -813,7 +863,7 @@ export const ICPConfirmationScreen: React.FC = () => {
                 )}
               </div>
 
-              {/* FIELD 06: CORE PAIN (VISUALLY STANDS OUT SLIGHTLY) */}
+              {/* FIELD 06: CORE PAIN */}
               <div className="space-y-2 pt-1">
                 <label className="block text-[11px] font-ui uppercase tracking-wider text-white/45">
                   Likely business pain
@@ -834,9 +884,6 @@ export const ICPConfirmationScreen: React.FC = () => {
                       className="w-full bg-transparent border-0 text-white text-sm font-ui focus:outline-none resize-none"
                     />
                   )}
-                  <span className="text-[10px] text-white/35 font-ui mt-2 block tracking-wide">
-                    Identified from market demand &amp; operational friction patterns
-                  </span>
                 </div>
               </div>
 
@@ -861,30 +908,9 @@ export const ICPConfirmationScreen: React.FC = () => {
                   />
                 )}
               </div>
-
-              {/* Inline Edit Action Footer if active */}
-              {isEditing && (
-                <div className="pt-3 border-t border-white/[0.08] flex items-center justify-end gap-3">
-                  <button
-                    type="button"
-                    onClick={handleCancelEdits}
-                    className="px-4 py-2 rounded-full glass-pill text-xs font-ui text-white/70 hover:text-white transition-all"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSaveEdits}
-                    className="px-5 py-2 rounded-full bg-white text-black text-xs font-ui font-medium hover:bg-white/90 transition-all flex items-center gap-1.5 shadow-md"
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Update ICP</span>
-                  </button>
-                </div>
-              )}
             </motion.div>
 
-            {/* RIGHT COLUMN: AI REASONING / PREVIEW PANEL (~38% width: 5 cols on 12-col grid) */}
+            {/* RIGHT COLUMN: AI REASONING & ASSUMPTIONS (~38% width) */}
             <motion.div
               variants={entranceVariant}
               initial="initial"
@@ -892,7 +918,7 @@ export const ICPConfirmationScreen: React.FC = () => {
               transition={{ delay: 0.38 }}
               className="lg:col-span-5 xl:col-span-5 rounded-[24px] liquid-glass-strong border border-white/[0.12] p-6 sm:p-7 space-y-6 shadow-2xl relative"
             >
-              {/* Header: WHY LEADFORGE CHOSE THIS (Instrument Serif italic 30-36px) */}
+              {/* Header */}
               <div className="space-y-1">
                 <span className="font-ui font-medium text-[10px] uppercase tracking-[0.22em] text-white/40 block">
                   AI Intelligence Rationale
@@ -902,7 +928,7 @@ export const ICPConfirmationScreen: React.FC = () => {
                 </h2>
               </div>
 
-              {/* Reasoning Blocks with subtle numbered markers (not bullet lists) */}
+              {/* Reasoning Blocks */}
               <div className="space-y-4 pt-1">
                 {localICP.reasoning.map((block) => (
                   <div key={block.number} className="space-y-1">
@@ -932,25 +958,15 @@ export const ICPConfirmationScreen: React.FC = () => {
                   </span>
                 </div>
 
-                {/* Compact horizontal confidence indicator bar */}
                 <div className="w-full h-1.5 rounded-full bg-white/[0.08] overflow-hidden relative">
                   <div
                     className="h-full bg-white rounded-full transition-all duration-700 shadow-[0_0_12px_rgba(255,255,255,0.7)]"
                     style={{ width: `${localICP.confidence}%` }}
                   />
                 </div>
-
-                <div className="space-y-0.5 pt-0.5">
-                  <span className="font-ui font-medium text-xs text-white block">
-                    High confidence
-                  </span>
-                  <p className="font-ui text-[11.5px] text-white/45 font-light leading-snug">
-                    Based on your business description and target market.
-                  </p>
-                </div>
               </div>
 
-              {/* AI ASSUMPTIONS TO REVIEW */}
+              {/* ASSUMPTIONS TO REVIEW */}
               <div className="pt-3 border-t border-white/[0.08] space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="font-ui font-medium text-[10.5px] uppercase tracking-[0.2em] text-white/40">
@@ -1042,12 +1058,234 @@ export const ICPConfirmationScreen: React.FC = () => {
             </motion.div>
           </div>
 
+          {/* DEDICATED LEAD DISCOVERY SEARCH ENGINE (Screen 03 Core Requirement) */}
+          <motion.div
+            variants={entranceVariant}
+            initial="initial"
+            animate="animate"
+            transition={{ delay: 0.44 }}
+            className="mt-8 rounded-[24px] glass-panel border border-white/[0.12] p-6 sm:p-8 space-y-6 shadow-2xl relative"
+          >
+            {/* Header with real provider status */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.08] pb-5">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <Database className="w-4 h-4 text-white/80" />
+                  <h3 className="font-ui font-medium text-base sm:text-lg text-white">
+                    Live Lead Discovery &amp; Verification
+                  </h3>
+                </div>
+                <p className="text-xs text-white/60 font-light">
+                  Query verified prospect accounts matching your configured criteria.
+                </p>
+              </div>
+
+              {/* Provider Integration Status Indicator */}
+              <div className="flex items-center gap-2">
+                {providerStatus?.providerConfigured ? (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-ui bg-emerald-950/40 text-emerald-300 border border-emerald-500/30">
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{providerStatus.providerName || 'Live Provider'} Connected</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-ui bg-white/[0.05] text-white/70 border border-white/[0.12]">
+                    <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Workspace Data Source (No external provider API set)</span>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Provider notice banner if external provider is not configured */}
+            {providerStatus && !providerStatus.providerConfigured && (
+              <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08] text-xs font-ui text-white/70 flex items-start gap-2.5">
+                <Database className="w-4 h-4 text-white/50 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <span className="font-medium text-white/90">Source Status: Workspace Accounts Repository</span>
+                  <p className="text-white/50 font-light leading-relaxed">
+                    {providerStatus.message}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Search Trigger Bar */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 bg-white/[0.02] p-4 rounded-2xl border border-white/[0.06]">
+              <div className="flex flex-wrap items-center gap-2 text-xs font-ui">
+                <span className="text-white/40 uppercase tracking-wider text-[10.5px]">Active Filters:</span>
+                <span className="px-2.5 py-0.5 rounded-full bg-white/[0.06] text-white/80 border border-white/[0.08]">
+                  {localICP.industries.length} Industries
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full bg-white/[0.06] text-white/80 border border-white/[0.08]">
+                  {localICP.geography.length} Regions
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full bg-white/[0.06] text-white/80 border border-white/[0.08]">
+                  {localICP.companySize.length} Sizes
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleDiscoverLeads}
+                disabled={isSearchingLeads || isApproving}
+                className="h-[44px] px-6 rounded-full bg-white text-black text-xs sm:text-sm font-ui font-medium hover:bg-white/90 active:scale-[0.98] transition-all flex items-center justify-center gap-2 shadow-md disabled:opacity-50"
+              >
+                {isSearchingLeads ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-black" />
+                    <span>Searching data source…</span>
+                  </>
+                ) : (
+                  <>
+                    <Search className="w-3.5 h-3.5 text-black" />
+                    <span>Discover Target Leads</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Results Area */}
+            {hasSearched && (
+              <div className="space-y-4 pt-2">
+                {discoveryError && (
+                  <div className="p-3.5 rounded-xl bg-red-950/40 border border-red-500/30 text-red-200 text-xs font-ui flex items-center justify-between gap-3">
+                    <span>{discoveryError}</span>
+                    <button
+                      type="button"
+                      onClick={handleDiscoverLeads}
+                      className="px-3 py-1 rounded-full bg-white text-black text-xs font-medium hover:bg-white/90"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+
+                {discoveredLeads && discoveredLeads.length > 0 ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between text-xs font-ui text-white/50 px-1">
+                      <span>Found {discoveredLeads.length} matching prospect accounts</span>
+                      <span>Verified from real workspace database</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {discoveredLeads.map((lead) => {
+                        const isSaved = savedLeadIds.includes(lead.id);
+                        const isSaving = savingLeadId === lead.id;
+
+                        return (
+                          <div
+                            key={lead.id}
+                            className="p-5 rounded-2xl bg-white/[0.035] border border-white/[0.10] hover:border-white/[0.20] transition-all space-y-3"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="space-y-1">
+                                <h4 className="font-ui font-medium text-sm sm:text-base text-white">
+                                  {lead.name}
+                                </h4>
+                                {lead.domain && (
+                                  <a
+                                    href={`https://${lead.domain}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-[11px] font-ui text-white/50 hover:text-white flex items-center gap-1 transition-colors"
+                                  >
+                                    <span>{lead.domain}</span>
+                                    <ExternalLink className="w-2.5 h-2.5" />
+                                  </a>
+                                )}
+                              </div>
+
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-ui bg-white/[0.06] text-white/70 border border-white/[0.08] shrink-0">
+                                {lead.source}
+                              </span>
+                            </div>
+
+                            <p className="text-xs text-white/70 font-light line-clamp-2 leading-relaxed">
+                              {lead.description}
+                            </p>
+
+                            <div className="flex flex-wrap items-center gap-2 text-[11px] font-ui text-white/60">
+                              <span className="inline-flex items-center gap-1">
+                                <Building2 className="w-3 h-3 text-white/40" />
+                                <span>{lead.industry}</span>
+                              </span>
+                              <span className="text-white/20">•</span>
+                              <span className="inline-flex items-center gap-1">
+                                <MapPin className="w-3 h-3 text-white/40" />
+                                <span>{lead.location}</span>
+                              </span>
+                              <span className="text-white/20">•</span>
+                              <span className="inline-flex items-center gap-1">
+                                <Users className="w-3 h-3 text-white/40" />
+                                <span>{lead.size}</span>
+                              </span>
+                            </div>
+
+                            {lead.contact && (
+                              <div className="pt-2 border-t border-white/[0.06] flex items-center justify-between gap-2 text-xs font-ui">
+                                <div className="space-y-0.5">
+                                  <span className="text-white/90 font-medium block">
+                                    {lead.contact.name}
+                                  </span>
+                                  <span className="text-white/50 text-[11px] block">
+                                    {lead.contact.title}
+                                  </span>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveLead(lead)}
+                                  disabled={isSaved || isSaving}
+                                  className={`px-3 py-1 rounded-full text-xs font-ui transition-all flex items-center gap-1 ${
+                                    isSaved
+                                      ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-500/30'
+                                      : 'bg-white text-black font-medium hover:bg-white/90'
+                                  }`}
+                                >
+                                  {isSaving ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                  ) : isSaved ? (
+                                    <>
+                                      <Check className="w-3 h-3" />
+                                      <span>Saved to Pipeline</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Plus className="w-3 h-3" />
+                                      <span>Save to Pipeline</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : !isSearchingLeads ? (
+                  <div className="p-8 rounded-2xl bg-white/[0.02] border border-white/[0.08] text-center space-y-3">
+                    <Building2 className="w-8 h-8 text-white/30 mx-auto" />
+                    <div className="space-y-1">
+                      <h4 className="font-ui font-medium text-sm text-white">
+                        No leads found in workspace database for these filters
+                      </h4>
+                      <p className="text-xs text-white/50 font-light max-w-md mx-auto leading-relaxed">
+                        No accounts in your current workspace match all selected criteria. Broaden your industry/geography filters or connect an external data provider.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </motion.div>
+
           {/* PRIMARY ACTION & FOOTER AREA */}
           <motion.div
             variants={entranceVariant}
             initial="initial"
             animate="animate"
-            transition={{ delay: 0.46 }}
+            transition={{ delay: 0.52 }}
             className="pt-10 flex flex-col items-center gap-4"
           >
             {/* Sequential Approval Indicator Transition */}
@@ -1057,21 +1295,10 @@ export const ICPConfirmationScreen: React.FC = () => {
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -6 }}
-                  className="flex flex-col items-center gap-1.5 text-xs font-ui"
+                  className="flex items-center gap-2 text-xs font-ui text-white"
                 >
-                  <div className="flex items-center gap-2 text-white">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
-                    <span className="font-medium">
-                      {approvalStage === 'APPROVED'
-                        ? 'ICP approved'
-                        : 'Preparing opportunity discovery…'}
-                    </span>
-                  </div>
-                  {approvalStage === 'DISCOVERING' && (
-                    <span className="text-white/45 text-[11px] font-light">
-                      Synthesizing intelligence feed for your dashboard
-                    </span>
-                  )}
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                  <span>Persisting confirmed ICP to database &amp; finalizing setup…</span>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -1081,17 +1308,17 @@ export const ICPConfirmationScreen: React.FC = () => {
               <button
                 type="button"
                 onClick={handleApprove}
-                disabled={isApproving}
+                disabled={isApproving || isSearchingLeads}
                 className="w-full sm:w-auto h-[52px] sm:h-[54px] px-10 rounded-full bg-white text-black font-ui font-medium text-sm sm:text-base hover:bg-[#eaeaea] active:scale-[0.98] transition-all flex items-center justify-center gap-2.5 shadow-xl shadow-white/10 disabled:opacity-60"
               >
                 {isApproving ? (
                   <>
-                    <Check className="w-4 h-4 text-black" />
-                    <span>ICP approved</span>
+                    <Loader2 className="w-4 h-4 animate-spin text-black" />
+                    <span>Finalizing Setup…</span>
                   </>
                 ) : (
                   <>
-                    <span>Approve ICP</span>
+                    <span>Approve ICP &amp; Enter Dashboard</span>
                     <ArrowRight className="w-4 h-4 text-black" />
                   </>
                 )}
@@ -1100,7 +1327,6 @@ export const ICPConfirmationScreen: React.FC = () => {
 
             {/* Secondary Controls: Start over & Regenerate with AI */}
             <div className="flex items-center gap-6 pt-1 text-xs font-ui">
-              {/* Secondary text link: Start over */}
               <button
                 type="button"
                 onClick={reopenOnboarding}
@@ -1112,14 +1338,17 @@ export const ICPConfirmationScreen: React.FC = () => {
 
               <span className="text-white/20">•</span>
 
-              {/* Subtle text control: Regenerate with AI */}
               <button
                 type="button"
                 onClick={handleTriggerRegenerate}
-                disabled={isApproving}
-                className="text-white/40 hover:text-white/75 transition-colors inline-flex items-center gap-1.5"
+                disabled={isApproving || isRegenerating}
+                className="text-white/40 hover:text-white/75 transition-colors inline-flex items-center gap-1.5 disabled:opacity-50"
               >
-                <RotateCcw className="w-3 h-3" />
+                {isRegenerating ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <RotateCcw className="w-3 h-3" />
+                )}
                 <span>Regenerate with AI</span>
               </button>
             </div>
@@ -1131,7 +1360,7 @@ export const ICPConfirmationScreen: React.FC = () => {
           variants={entranceVariant}
           initial="initial"
           animate="animate"
-          transition={{ delay: 0.54 }}
+          transition={{ delay: 0.58 }}
           className="w-full flex items-center justify-between text-[11px] text-white/30 font-ui pt-6 border-t border-white/[0.04]"
         >
           <span>LeadForge Intelligence Engine</span>

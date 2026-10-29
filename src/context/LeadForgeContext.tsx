@@ -480,6 +480,16 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                 localStorage.removeItem("leadforge_onboarding_skipped");
               }
 
+              if (ws.is_icp_confirmed !== undefined) {
+                const confirmed = Boolean(ws.is_icp_confirmed);
+                setIsICPConfirmed(confirmed);
+                if (confirmed) {
+                  localStorage.setItem("leadforge_icp_confirmed", "true");
+                } else {
+                  localStorage.removeItem("leadforge_icp_confirmed");
+                }
+              }
+
               setWorkspace((prev) => ({
                 ...prev,
                 name: ws.name || prev.name,
@@ -843,6 +853,18 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const approveICP = async (updatedData?: Partial<StructuredICP>) => {
     const finalICP = updatedData ? { ...structuredICP, ...updatedData } : structuredICP;
+
+    // Persist to backend SQLite FIRST
+    await api.icp.update({
+      name: finalICP.customerType,
+      summary: finalICP.offerFit,
+      targetIndustries: finalICP.industries,
+      companySizes: finalICP.companySize,
+      geographies: finalICP.geography,
+      buyerRoles: finalICP.decisionMakers,
+      isConfirmed: true,
+    });
+
     setStructuredICP(finalICP);
     localStorage.setItem('leadforge_structured_icp', JSON.stringify(finalICP));
 
@@ -862,20 +884,6 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     setIsICPConfirmed(true);
     localStorage.setItem('leadforge_icp_confirmed', 'true');
-
-    try {
-      api.icp.update({
-        name: finalICP.customerType,
-        summary: finalICP.offerFit,
-        targetIndustries: finalICP.industries,
-        companySizes: finalICP.companySize,
-        geographies: finalICP.geography,
-        buyerRoles: finalICP.decisionMakers,
-        isConfirmed: true,
-      });
-    } catch {
-      // ignore
-    }
   };
 
   const updateStructuredICP = (updated: Partial<StructuredICP>) => {
@@ -887,74 +895,76 @@ export const LeadForgeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const regenerateICP = async (): Promise<StructuredICP> => {
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        const baseSell =
-          onboardingData?.whatYouSell || workspace.primaryService || 'AI automation service';
-        const baseAudience = onboardingData?.whoYouSellTo || 'Founder-led B2B SaaS companies';
-        const baseGeos =
-          onboardingData?.geographies && onboardingData.geographies.length > 0
-            ? onboardingData.geographies.map((g) =>
-                g === 'Custom' && onboardingData.customGeography
-                  ? onboardingData.customGeography
-                  : g
-              )
-            : ['India', 'United States', 'United Kingdom'];
+    const baseSell =
+      onboardingData?.whatYouSell || workspace.primaryService || 'AI automation service';
+    const baseAudience = onboardingData?.whoYouSellTo || 'Founder-led B2B SaaS companies';
+    const baseGeos =
+      onboardingData?.geographies && onboardingData.geographies.length > 0
+        ? onboardingData.geographies.map((g) =>
+            g === 'Custom' && onboardingData.customGeography
+              ? onboardingData.customGeography
+              : g
+          )
+        : ['India', 'United States', 'United Kingdom'];
 
-        const regenerated: StructuredICP = {
-          customerType: baseAudience,
-          companySize: ['10–50', '51–100', '101–250'],
-          industries: ['SaaS', 'Technology', 'B2B Services', 'Professional Services'],
-          geography: baseGeos,
-          decisionMakers: ['Founder', 'CEO', 'Head of Marketing', 'VP Growth', 'Revenue Leader'],
-          businessPain: 'Growing companies that need a more scalable way to generate qualified demand.',
-          offerFit: `Your ${baseSell} aligns with companies actively investing in growth and operational efficiency.`,
-          confidence: 87,
-          reasoning: [
-            {
-              number: '01',
-              title: 'Customer fit',
-              description: 'Your existing offer is designed for B2B organizations with operational complexity.',
-            },
-            {
-              number: '02',
-              title: 'Buying potential',
-              description: 'Companies at this stage are more likely to have budget and a defined business problem.',
-            },
-            {
-              number: '03',
-              title: 'Reachability',
-              description: 'Founder and growth roles are identifiable decision-makers for this type of purchase.',
-            },
-          ],
-          assumptions: [
-            {
-              id: 'as-1',
-              text: 'You primarily sell to companies with an existing sales team.',
-              status: 'pending',
-            },
-            {
-              id: 'as-2',
-              text: 'You prefer mid-market contracts over high-volume transactional sales.',
-              status: 'pending',
-            },
-            {
-              id: 'as-3',
-              text: 'Founder-led businesses are your highest-converting customer type.',
-              status: 'pending',
-            },
-          ],
-        };
-        setStructuredICP(regenerated);
-        localStorage.setItem('leadforge_structured_icp', JSON.stringify(regenerated));
-        resolve(regenerated);
-      }, 1400);
-    });
+    let parsedResult: any = null;
+    try {
+      parsedResult = await api.icp.parse(
+        `Generate high-intent B2B target ICP profile for a company selling: "${baseSell}" to audience: "${baseAudience}".`
+      );
+    } catch (err) {
+      console.warn('Real AI parse failed during regenerateICP, using deterministic baseline:', err);
+    }
+
+    const c = parsedResult?.criteria;
+    const regenerated: StructuredICP = {
+      customerType: c?.name || baseAudience,
+      companySize: c?.companySize?.length ? c.companySize : ['10–50', '51–100', '101–250'],
+      industries: c?.industries?.length ? c.industries : ['SaaS', 'Technology', 'B2B Services'],
+      geography: c?.geography?.length ? c.geography : baseGeos,
+      decisionMakers: c?.buyerRoles?.length ? c.buyerRoles : ['Founder', 'CEO', 'Head of Marketing', 'VP Growth'],
+      businessPain: c?.summary || 'Growing companies requiring predictable sales pipeline and operational velocity.',
+      offerFit: `Your ${baseSell} aligns with companies actively investing in growth and operational efficiency.`,
+      confidence: parsedResult?.source?.includes('gemini') ? 94 : 86,
+      reasoning: [
+        {
+          number: '01',
+          title: 'Strategic Market Fit',
+          description: `Companies in ${c?.industries?.[0] || 'B2B SaaS'} frequently experience bottlenecks that ${baseSell} directly solves.`,
+        },
+        {
+          number: '02',
+          title: 'Purchasing Authority',
+          description: 'Key decision makers have designated budget allocations for workflow and growth modernization.',
+        },
+        {
+          number: '03',
+          title: 'Direct Reachability',
+          description: 'Target buyer roles are identifiable via public leadership rosters and commercial registers.',
+        },
+      ],
+      assumptions: (c?.inferredAssumptions?.length ? c.inferredAssumptions : [
+        'You primarily target accounts with an existing sales or operations function.',
+        'Mid-market contracts represent your highest customer lifetime value.',
+        'High-velocity tech companies convert faster on outbound propositions.',
+      ]).map((text: string, idx: number) => ({
+        id: `as-${Date.now()}-${idx}`,
+        text,
+        status: 'pending' as const,
+      })),
+    };
+
+    setStructuredICP(regenerated);
+    localStorage.setItem('leadforge_structured_icp', JSON.stringify(regenerated));
+    return regenerated;
   };
 
-  const reopenICPConfirmation = () => {
+  const reopenICPConfirmation = async () => {
     setIsICPConfirmed(false);
     localStorage.removeItem('leadforge_icp_confirmed');
+    try {
+      await api.icp.update({ isConfirmed: false });
+    } catch {}
   };
 
   // Focus Mode

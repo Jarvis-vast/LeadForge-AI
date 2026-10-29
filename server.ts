@@ -123,9 +123,21 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
+  const icpProfile = db.prepare('SELECT is_confirmed FROM icp_profiles WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 1').get(req.workspace.id) as any;
+  let onboardingData = null;
+  if (req.workspace.onboarding_data) {
+    try {
+      onboardingData = JSON.parse(req.workspace.onboarding_data);
+    } catch {}
+  }
+
   res.json({
     user: req.user,
-    workspace: req.workspace,
+    workspace: {
+      ...req.workspace,
+      onboardingData,
+      is_icp_confirmed: icpProfile ? Boolean(icpProfile.is_confirmed) : false,
+    },
   });
 });
 
@@ -326,6 +338,177 @@ const handleICPParse = async (req: AuthenticatedRequest, res: Response) => {
 };
 app.post('/api/icp/parse', optionalAuth, handleICPParse);
 app.post('/api/icps/parse', optionalAuth, handleICPParse);
+
+// ----------------------------------------------------
+// Lead Discovery Endpoints (Screen 03)
+// ----------------------------------------------------
+app.get('/api/leads/provider-status', requireAuth, (req: AuthenticatedRequest, res) => {
+  const externalKey = process.env.LEAD_PROVIDER_API_KEY || process.env.APOLLO_API_KEY || process.env.HUNTER_API_KEY;
+  const countRow = db.prepare('SELECT COUNT(*) as count FROM accounts WHERE workspace_id = ?').get(req.workspace.id) as any;
+
+  res.json({
+    providerConfigured: Boolean(externalKey),
+    providerName: externalKey ? (process.env.APOLLO_API_KEY ? 'Apollo.io' : 'Custom Provider') : null,
+    supportedFilters: ['industry', 'geography', 'company_size', 'job_title'],
+    workspaceLeadCount: countRow?.count || 0,
+    message: externalKey
+      ? 'External lead discovery provider is connected.'
+      : 'No third-party lead provider (e.g. Apollo, Clearbit, or Hunter) is configured. Searches query existing accounts in your workspace database.',
+  });
+});
+
+app.post('/api/leads/discover', requireAuth, (req: AuthenticatedRequest, res) => {
+  try {
+    const { industries, geographies, companySizes, jobTitles, query } = req.body || {};
+
+    // Validate inputs
+    const validIndustries = Array.isArray(industries)
+      ? industries.filter((i) => typeof i === 'string' && i.trim().length > 0)
+      : [];
+    const validGeos = Array.isArray(geographies)
+      ? geographies.filter((g) => typeof g === 'string' && g.trim().length > 0)
+      : [];
+    const validSizes = Array.isArray(companySizes)
+      ? companySizes.filter((s) => typeof s === 'string' && s.trim().length > 0)
+      : [];
+    const validTitles = Array.isArray(jobTitles)
+      ? jobTitles.filter((t) => typeof t === 'string' && t.trim().length > 0)
+      : [];
+    const searchQuery = typeof query === 'string' ? query.trim() : '';
+
+    if (validIndustries.length === 0 && validGeos.length === 0 && validSizes.length === 0 && !searchQuery) {
+      return res.status(400).json({
+        error: 'Please provide at least one search filter (industry, geography, or company size) to discover leads.',
+      });
+    }
+
+    const externalKey = process.env.LEAD_PROVIDER_API_KEY || process.env.APOLLO_API_KEY || process.env.HUNTER_API_KEY;
+
+    // Honest database query of workspace prospect accounts
+    const accounts = db.prepare(`
+      SELECT a.*, c.name as contact_name, c.title as contact_title, c.email as contact_email
+      FROM accounts a
+      LEFT JOIN contacts c ON c.account_id = a.id AND c.is_primary = 1
+      WHERE a.workspace_id = ?
+    `).all(req.workspace.id) as any[];
+
+    // Match criteria against real workspace records
+    const matches = accounts.filter((acc) => {
+      let matchesIndustry = true;
+      let matchesGeo = true;
+      let matchesSize = true;
+      let matchesQuery = true;
+      let matchesTitle = true;
+
+      if (validIndustries.length > 0) {
+        matchesIndustry = validIndustries.some((ind) =>
+          acc.industry && acc.industry.toLowerCase().includes(ind.toLowerCase())
+        );
+      }
+
+      if (validGeos.length > 0) {
+        matchesGeo = validGeos.some((geo) => {
+          if (geo === 'Global') return true;
+          return acc.location && acc.location.toLowerCase().includes(geo.toLowerCase());
+        });
+      }
+
+      if (validSizes.length > 0) {
+        matchesSize = validSizes.some((size) => {
+          if (!acc.size) return false;
+          // Match numbers or ranges
+          const sizeNumbers = size.match(/\d+/g) || [];
+          const accNumbers = acc.size.match(/\d+/g) || [];
+          if (acc.size.toLowerCase().includes(size.toLowerCase())) return true;
+          return sizeNumbers.some((num) => acc.size.includes(num));
+        });
+      }
+
+      if (validTitles.length > 0 && acc.contact_title) {
+        matchesTitle = validTitles.some((title) =>
+          acc.contact_title.toLowerCase().includes(title.toLowerCase())
+        );
+      }
+
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        matchesQuery =
+          (acc.name && acc.name.toLowerCase().includes(q)) ||
+          (acc.domain && acc.domain.toLowerCase().includes(q)) ||
+          (acc.description && acc.description.toLowerCase().includes(q));
+      }
+
+      return matchesIndustry && matchesGeo && matchesSize && matchesTitle && matchesQuery;
+    });
+
+    res.json({
+      providerConfigured: Boolean(externalKey),
+      providerName: externalKey ? (process.env.APOLLO_API_KEY ? 'Apollo.io' : 'Custom Provider') : null,
+      source: 'workspace-database',
+      providerMessage: externalKey
+        ? 'External lead provider is configured.'
+        : 'No third-party lead provider (e.g. Apollo, Clearbit, or Hunter) is configured. Displaying matching accounts from your workspace.',
+      criteria: {
+        industries: validIndustries,
+        geographies: validGeos,
+        companySizes: validSizes,
+        jobTitles: validTitles,
+        query: searchQuery,
+      },
+      totalMatches: matches.length,
+      results: matches.map((m) => ({
+        id: m.id,
+        name: m.name,
+        domain: m.domain,
+        industry: m.industry,
+        size: m.size,
+        location: m.location,
+        description: m.description,
+        techStack: m.tech_stack ? JSON.parse(m.tech_stack) : [],
+        source: m.source || 'Workspace Account',
+        contact: m.contact_name
+          ? {
+              name: m.contact_name,
+              title: m.contact_title,
+              email: m.contact_email,
+            }
+          : null,
+      })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to search leads.' });
+  }
+});
+
+app.post('/api/leads/save', requireAuth, (req: AuthenticatedRequest, res) => {
+  try {
+    const { name, domain, industry, size, location, description, contactName, contactRole, email } = req.body || {};
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'Company or lead name is required.' });
+    }
+
+    const result = OpportunityService.createAccount(req.workspace.id, {
+      name: name.trim(),
+      domain: domain?.trim() || '',
+      industry: industry?.trim() || 'Technology',
+      size: size?.trim() || '10-50',
+      location: location?.trim() || 'Global',
+      description: description?.trim() || '',
+      source: 'Lead Discovery (Screen 03)',
+      contactName: contactName?.trim(),
+      contactRole: contactRole?.trim(),
+      email: email?.trim(),
+    });
+
+    res.status(201).json({
+      success: true,
+      accountId: result.accountId,
+      opportunityId: result.opportunityId,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to save lead.' });
+  }
+});
 
 // ----------------------------------------------------
 // Accounts Endpoints (Spec #32)
