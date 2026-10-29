@@ -289,4 +289,69 @@ export class AuthService {
       db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
     }
   }
+
+  static recoverAccount(email: string, recoverySecret: string, newPassword: string): { success: boolean; message: string; email: string } {
+    const configuredSecret = process.env.LEADFORGE_RECOVERY_SECRET;
+    if (!configuredSecret || typeof configuredSecret !== 'string' || !configuredSecret.trim()) {
+      throw new Error('Account recovery is not configured on this server.');
+    }
+
+    if (!recoverySecret || typeof recoverySecret !== 'string' || !recoverySecret.trim()) {
+      throw new Error('Invalid recovery secret.');
+    }
+
+    // Timing-safe comparison using SHA-256 digests to prevent timing attacks and length leaks
+    const expectedHash = crypto.createHash('sha256').update(configuredSecret.trim()).digest();
+    const providedHash = crypto.createHash('sha256').update(recoverySecret.trim()).digest();
+    const isSecretValid = crypto.timingSafeEqual(expectedHash, providedHash);
+    if (!isSecretValid) {
+      throw new Error('Invalid recovery secret.');
+    }
+
+    if (!email || typeof email !== 'string' || !EMAIL_REGEX.test(email.trim())) {
+      throw new Error('A valid email address is required.');
+    }
+
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.length < MIN_PASSWORD_LENGTH) {
+      throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters long.`);
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const existingUser = db.prepare('SELECT id, email FROM profiles WHERE email = ?').get(normalizedEmail) as any;
+    if (!existingUser) {
+      throw new Error('No account found with this email address.');
+    }
+
+    const newPasswordHash = hashPassword(newPassword);
+    const now = new Date().toISOString();
+
+    db.exec('BEGIN TRANSACTION;');
+    try {
+      // Update only matching user password hash
+      db.prepare(`
+        UPDATE profiles
+        SET password_hash = ?, updated_at = ?
+        WHERE id = ?
+      `).run(newPasswordHash, now, existingUser.id);
+
+      // Invalidate all existing sessions for this user
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(existingUser.id);
+
+      db.exec('COMMIT;');
+    } catch (err) {
+      try {
+        db.exec('ROLLBACK;');
+      } catch {
+        // ignore rollback errors
+      }
+      throw err;
+    }
+
+    return {
+      success: true,
+      message: 'Account password has been successfully reset. Please sign in with your new password.',
+      email: normalizedEmail,
+    };
+  }
 }
+

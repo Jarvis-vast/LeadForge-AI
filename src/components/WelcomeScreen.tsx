@@ -2,22 +2,27 @@ import React, { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { NetworkConstellation } from "./NetworkConstellation";
 import { useLeadForge } from "../context/LeadForgeContext";
-import { Loader2, Eye, EyeOff, Check, AlertCircle } from "lucide-react";
+import { api } from "../lib/api";
+import { Loader2, Eye, EyeOff, Check, AlertCircle, KeyRound } from "lucide-react";
 
 export const WelcomeScreen: React.FC = () => {
   const { loginWithEmail, registerWithEmail } = useLeadForge();
 
-  const [mode, setMode] = useState<"signin" | "register">("signin");
+  const [mode, setMode] = useState<"signin" | "register" | "recover">("signin");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [recoverySecret, setRecoverySecret] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [showSecret, setShowSecret] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  const switchMode = (newMode: "signin" | "register") => {
+  const switchMode = (newMode: "signin" | "register" | "recover") => {
     setMode(newMode);
     setErrorMessage(null);
+    setSuccessMessage(null);
   };
 
   const isPasswordValid = password.length >= 8;
@@ -27,10 +32,12 @@ export const WelcomeScreen: React.FC = () => {
     if (isSubmitting) return;
 
     setErrorMessage(null);
+    setSuccessMessage(null);
 
     const trimmedEmail = email.trim();
     const trimmedPassword = password;
     const trimmedName = name.trim();
+    const trimmedSecret = recoverySecret.trim();
 
     // Client-side validations
     if (mode === "register" && !trimmedName) {
@@ -46,6 +53,35 @@ export const WelcomeScreen: React.FC = () => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(trimmedEmail)) {
       setErrorMessage("Please enter a valid work email address (e.g. you@company.com).");
+      return;
+    }
+
+    if (mode === "recover") {
+      if (!trimmedSecret) {
+        setErrorMessage("Please enter the server recovery secret.");
+        return;
+      }
+      if (!trimmedPassword) {
+        setErrorMessage("Please enter a new password.");
+        return;
+      }
+      if (trimmedPassword.length < 8) {
+        setErrorMessage("New password must be at least 8 characters long.");
+        return;
+      }
+
+      setIsSubmitting(true);
+      try {
+        const res = await api.auth.recover(trimmedEmail, trimmedSecret, trimmedPassword);
+        setSuccessMessage(res.message || "Password successfully reset. You can now sign in.");
+        setPassword("");
+        setRecoverySecret("");
+        setMode("signin");
+      } catch (err: any) {
+        setErrorMessage(err?.message || "Account recovery failed. Please verify your recovery secret.");
+      } finally {
+        setIsSubmitting(false);
+      }
       return;
     }
 
@@ -186,19 +222,25 @@ export const WelcomeScreen: React.FC = () => {
               {/* Panel Header */}
               <div className="space-y-1.5">
                 <div className="font-ui font-medium text-[11px] uppercase tracking-[0.15em] text-white/[0.52]">
-                  {mode === "signin" ? "WELCOME TO LEADFORGE" : "START PROSPECTING"}
+                  {mode === "signin" ? "WELCOME TO LEADFORGE" : mode === "register" ? "START PROSPECTING" : "EMERGENCY ACCESS"}
                 </div>
                 <h2 className="font-editorial italic text-white text-[32px] sm:text-[38px] leading-[1.0] font-normal">
-                  {mode === "signin" ? "Access your command center." : "Create your founder workspace."}
+                  {mode === "signin"
+                    ? "Access your command center."
+                    : mode === "register"
+                    ? "Create your founder workspace."
+                    : "Recover your account."}
                 </h2>
                 <p className="text-[13.5px] sm:text-[14px] text-white/[0.62] font-light leading-[1.45]">
                   {mode === "signin"
                     ? "Sign in to access your priority opportunities and daily intelligence briefing."
-                    : "Provision your dedicated workspace with automated B2B pipeline scoring."}
+                    : mode === "register"
+                    ? "Provision your dedicated workspace with automated B2B pipeline scoring."
+                    : "Reset your credentials using your server owner recovery secret."}
                 </p>
               </div>
 
-              {/* Mode Toggle Switcher (Sign In vs Create Account) */}
+              {/* Mode Toggle Switcher */}
               <div className="flex p-1 rounded-full bg-white/[0.04] border border-white/[0.08]">
                 <button
                   type="button"
@@ -222,10 +264,29 @@ export const WelcomeScreen: React.FC = () => {
                 >
                   Create Account
                 </button>
+                {mode === "recover" && (
+                  <button
+                    type="button"
+                    className="flex-1 py-1.5 text-xs font-ui font-medium rounded-full bg-white text-black shadow-md"
+                  >
+                    Recover
+                  </button>
+                )}
               </div>
 
-              {/* Error state message (semantic restrained red) */}
+              {/* Feedback messages */}
               <AnimatePresence>
+                {successMessage && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -6 }}
+                    className="p-3 rounded-xl bg-emerald-950/60 border border-emerald-500/50 text-emerald-200 text-xs font-ui leading-snug flex items-start gap-2"
+                  >
+                    <Check className="w-4 h-4 shrink-0 text-emerald-400 mt-0.5" />
+                    <span>{successMessage}</span>
+                  </motion.div>
+                )}
                 {errorMessage && (
                   <motion.div
                     initial={{ opacity: 0, y: -6 }}
@@ -239,7 +300,7 @@ export const WelcomeScreen: React.FC = () => {
                 )}
               </AnimatePresence>
 
-              {/* Authentication Form */}
+              {/* Authentication / Recovery Form */}
               <form onSubmit={handleSubmit} className="space-y-3.5">
                 {/* Full Name field (Create Account mode only) */}
                 {mode === "register" && (
@@ -286,13 +347,66 @@ export const WelcomeScreen: React.FC = () => {
                   />
                 </div>
 
+                {/* Server Recovery Secret (Recovery mode only) */}
+                {mode === "recover" && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="space-y-1"
+                  >
+                    <div className="flex items-center justify-between pl-1 pr-1">
+                      <label className="text-xs font-ui text-white/70 block">
+                        Server recovery secret
+                      </label>
+                      <span className="text-[11px] font-mono text-white/40">
+                        LEADFORGE_RECOVERY_SECRET
+                      </span>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type={showSecret ? "text" : "password"}
+                        autoComplete="off"
+                        value={recoverySecret}
+                        onChange={(e) => {
+                          setRecoverySecret(e.target.value);
+                          if (errorMessage) setErrorMessage(null);
+                        }}
+                        placeholder="Enter owner recovery secret"
+                        disabled={isSubmitting}
+                        className="w-full h-[46px] pl-4 pr-11 rounded-full bg-white/[0.035] border border-white/[0.10] text-sm text-white placeholder-white/40 focus:outline-none input-luminous-focus transition-all duration-200 disabled:opacity-50 font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowSecret(!showSecret)}
+                        disabled={isSubmitting}
+                        tabIndex={-1}
+                        aria-label={showSecret ? "Hide recovery secret" : "Show recovery secret"}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-white transition-colors p-1"
+                      >
+                        {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+
                 {/* Password field with toggle */}
                 <div className="space-y-1">
                   <div className="flex items-center justify-between pl-1 pr-1">
                     <label className="text-xs font-ui text-white/70 block">
-                      Password
+                      {mode === "recover" ? "New password" : "Password"}
                     </label>
-                    {mode === "register" && (
+                    {mode === "signin" && (
+                      <button
+                        type="button"
+                        onClick={() => switchMode("recover")}
+                        disabled={isSubmitting}
+                        className="text-[11px] font-ui text-white/50 hover:text-white transition-colors cursor-pointer"
+                      >
+                        Recover account
+                      </button>
+                    )}
+                    {(mode === "register" || mode === "recover") && (
                       <span className={`text-[11px] font-ui transition-colors ${isPasswordValid ? "text-emerald-400" : "text-white/40"}`}>
                         {isPasswordValid ? (
                           <span className="inline-flex items-center gap-1">
@@ -313,7 +427,7 @@ export const WelcomeScreen: React.FC = () => {
                         setPassword(e.target.value);
                         if (errorMessage) setErrorMessage(null);
                       }}
-                      placeholder={mode === "register" ? "Minimum 8 characters" : "Enter your password"}
+                      placeholder={mode === "signin" ? "Enter your password" : "Minimum 8 characters"}
                       disabled={isSubmitting}
                       className="w-full h-[46px] pl-4 pr-11 rounded-full bg-white/[0.035] border border-white/[0.10] text-sm text-white placeholder-white/40 focus:outline-none input-luminous-focus transition-all duration-200 disabled:opacity-50"
                     />
@@ -339,60 +453,88 @@ export const WelcomeScreen: React.FC = () => {
                   {isSubmitting ? (
                     <div className="flex items-center gap-2">
                       <Loader2 className="w-4 h-4 animate-spin text-black" />
-                      <span>{mode === "signin" ? "Signing in…" : "Creating account…"}</span>
+                      <span>
+                        {mode === "recover"
+                          ? "Resetting password…"
+                          : mode === "signin"
+                          ? "Signing in…"
+                          : "Creating account…"}
+                      </span>
                     </div>
                   ) : (
-                    <span>{mode === "signin" ? "Sign In" : "Create Account"}</span>
+                    <span>
+                      {mode === "recover"
+                        ? "Reset Password & Recover"
+                        : mode === "signin"
+                        ? "Sign In"
+                        : "Create Account"}
+                    </span>
                   )}
                 </button>
               </form>
 
-              {/* Divider */}
-              <div className="flex items-center gap-3 pt-1">
-                <div className="flex-1 h-px bg-white/[0.08]" />
-                <span className="font-ui text-[11px] text-white/[0.35]">or</span>
-                <div className="flex-1 h-px bg-white/[0.08]" />
-              </div>
+              {/* Divider (only for signin and register) */}
+              {mode !== "recover" && (
+                <>
+                  <div className="flex items-center gap-3 pt-1">
+                    <div className="flex-1 h-px bg-white/[0.08]" />
+                    <span className="font-ui text-[11px] text-white/[0.35]">or</span>
+                    <div className="flex-1 h-px bg-white/[0.08]" />
+                  </div>
 
-              {/* Google Sign-in: Explicitly indicates not configured in this build */}
-              <div className="space-y-1.5">
-                <button
-                  type="button"
-                  disabled
-                  className="w-full h-[44px] rounded-full bg-white/[0.04] border border-white/[0.08] text-white/40 font-ui font-medium text-xs flex items-center justify-center gap-2.5 cursor-not-allowed select-none"
-                  title="Google sign-in is not configured in this build"
-                >
-                  <svg className="w-4 h-4 shrink-0 opacity-40 grayscale" viewBox="0 0 24 24">
-                    <path
-                      fill="#4285F4"
-                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                    />
-                    <path
-                      fill="#34A853"
-                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                    />
-                    <path
-                      fill="#FBBC05"
-                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                    />
-                    <path
-                      fill="#EA4335"
-                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                    />
-                  </svg>
-                  <span>Continue with Google</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/[0.08] text-white/50 border border-white/[0.06]">
-                    Not configured
-                  </span>
-                </button>
-                <p className="text-[11px] text-white/35 text-center leading-normal">
-                  Google sign-in is not configured in this build. Please use work email.
-                </p>
-              </div>
+                  {/* Google Sign-in: Explicitly indicates not configured in this build */}
+                  <div className="space-y-1.5">
+                    <button
+                      type="button"
+                      disabled
+                      className="w-full h-[44px] rounded-full bg-white/[0.04] border border-white/[0.08] text-white/40 font-ui font-medium text-xs flex items-center justify-center gap-2.5 cursor-not-allowed select-none"
+                      title="Google sign-in is not configured in this build"
+                    >
+                      <svg className="w-4 h-4 shrink-0 opacity-40 grayscale" viewBox="0 0 24 24">
+                        <path
+                          fill="#4285F4"
+                          d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                        />
+                        <path
+                          fill="#34A853"
+                          d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                        />
+                        <path
+                          fill="#FBBC05"
+                          d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                        />
+                        <path
+                          fill="#EA4335"
+                          d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                        />
+                      </svg>
+                      <span>Continue with Google</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/[0.08] text-white/50 border border-white/[0.06]">
+                        Not configured
+                      </span>
+                    </button>
+                    <p className="text-[11px] text-white/35 text-center leading-normal">
+                      Google sign-in is not configured in this build. Please use work email.
+                    </p>
+                  </div>
+                </>
+              )}
 
               {/* Mode switch helper link */}
               <div className="text-center text-xs font-ui text-white/50 pt-1">
-                {mode === "signin" ? (
+                {mode === "recover" ? (
+                  <span>
+                    Remember your password?{" "}
+                    <button
+                      type="button"
+                      onClick={() => switchMode("signin")}
+                      disabled={isSubmitting}
+                      className="text-white hover:underline font-medium ml-1 cursor-pointer transition-colors"
+                    >
+                      Sign in
+                    </button>
+                  </span>
+                ) : mode === "signin" ? (
                   <span>
                     Don&apos;t have an account?{" "}
                     <button

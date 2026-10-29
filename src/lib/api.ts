@@ -62,6 +62,12 @@ export const api = {
       request<{ success: boolean }>('/api/auth/logout', {
         method: 'POST',
       }),
+    recover: (email: string, recoverySecret: string, newPassword: string) =>
+      request<{ success: boolean; message: string; email: string }>('/api/auth/recover', {
+        method: 'POST',
+        body: JSON.stringify({ email, recoverySecret, newPassword }),
+      }),
+    getRecoveryStatus: () => request<{ enabled: boolean }>('/api/auth/recovery-status'),
   },
 
   // Workspace

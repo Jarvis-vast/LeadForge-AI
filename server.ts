@@ -122,6 +122,51 @@ app.post('/api/auth/login', (req, res) => {
   }
 });
 
+app.get('/api/auth/recovery-status', (_req, res) => {
+  const isConfigured = Boolean(process.env.LEADFORGE_RECOVERY_SECRET && process.env.LEADFORGE_RECOVERY_SECRET.trim().length > 0);
+  res.json({ enabled: isConfigured });
+});
+
+app.post('/api/auth/recover', (req, res) => {
+  try {
+    const { email, recoverySecret, newPassword } = req.body;
+
+    if (!process.env.LEADFORGE_RECOVERY_SECRET || !process.env.LEADFORGE_RECOVERY_SECRET.trim()) {
+      return res.status(503).json({
+        error: 'Account recovery is not configured on this server. Contact the workspace owner or configure LEADFORGE_RECOVERY_SECRET.',
+      });
+    }
+
+    if (!recoverySecret || typeof recoverySecret !== 'string' || !recoverySecret.trim()) {
+      return res.status(401).json({ error: 'A valid recovery secret is required.' });
+    }
+
+    if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      return res.status(400).json({ error: 'A valid email address is required.' });
+    }
+
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
+    }
+
+    const result = AuthService.recoverAccount(email, recoverySecret, newPassword);
+    res.status(200).json(result);
+  } catch (err: any) {
+    const msg = err.message || 'Account recovery failed.';
+    if (msg.includes('not configured')) {
+      return res.status(503).json({ error: msg });
+    }
+    if (msg.includes('Invalid recovery secret')) {
+      return res.status(401).json({ error: msg });
+    }
+    if (msg.includes('No account found')) {
+      return res.status(404).json({ error: msg });
+    }
+    res.status(400).json({ error: msg });
+  }
+});
+
+
 app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
   const icpProfile = db.prepare('SELECT is_confirmed FROM icp_profiles WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 1').get(req.workspace.id) as any;
   let onboardingData = null;
